@@ -129,10 +129,17 @@ bash brain/setup.sh            # creates brain/.venv and installs deps
 
 ```bash
 cd ~/crab
-python3 -m venv brain/.venv
+python3 -m venv --system-site-packages brain/.venv   # see Jetson's system cv2/torch
 brain/.venv/bin/pip install -r brain/requirements.txt
 ```
 </details>
+
+`brain/setup.sh` creates the venv with **`--system-site-packages`** so it can
+import the Jetson's system OpenCV (with GStreamer, for the CSI camera) and CUDA
+`torch`. Those and `ultralytics` are **not** in a base flash — install them (see
+[Perception (Jetson)](#perception-jetson) and `brain/requirements-perception.txt`).
+Until they're present, the perception server runs but falls back to synthetic
+frames + the dummy detector (`simulate:true`).
 
 Configure how to reach the Pi in `brain/config.py` (defaults to the Pi mDNS
 hostname `picrawler.local:8000`). Override without editing code:
@@ -218,6 +225,13 @@ and point the test at `--base-url http://localhost:8000`.
   the system-installed SunFounder libs. Recreate it **with**
   `--system-site-packages` (re-run `robot/setup.sh`, which now does this), and
   confirm they're installed in the system Python.
+- **Perception `/snapshot` returns `simulate:true` / `backends:["dummy"]`** on the
+  Jetson: the camera and/or detector aren't available, so the engine fell back.
+  Check the server startup log for `CSI camera unavailable` / `could not load
+  backend`. Fixes: (a) recreate `brain/.venv` **with** `--system-site-packages`
+  (re-run `brain/setup.sh`); (b) install `cv2` with GStreamer and the Jetson
+  `torch` wheel + `ultralytics` — see [Perception (Jetson)](#perception-jetson).
+  `brain/setup.sh` prints which of `cv2` / `torch` / `ultralytics` are visible.
 
 ### Movement safety / brownout
 
