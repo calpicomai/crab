@@ -1,0 +1,7 @@
+# Brain node (Jetson Orin Nano) — Stage 1 dependencies only.
+# Later stages add perception (NanoOWL/YOLO), STT (whisper.cpp/faster-whisper),
+# TTS (Piper), and the Ollama client; those assume CUDA/JetPack and are added
+# in their own stages.
+
+httpx>=0.27
+pydantic>=2.6

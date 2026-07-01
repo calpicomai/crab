@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments (one per node — see README)
+.venv/
+robot/.venv/
+brain/.venv/
+venv/
+env/
+
+# Local config / secrets (protocol config is in code; anything local goes here)
+.env
+*.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
