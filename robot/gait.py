@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable
 
 from shared import DEFAULT_SPEED, LEG_COUNT, Pose, RobotStatus
 
@@ -76,6 +77,12 @@ class GaitEngine:
         self._pose: Pose = Pose.UNKNOWN
         self._is_moving: bool = False
         self._started_at: float = time.monotonic()
+        # Optional forward-clearance reader (cm), injected by the server from the
+        # ultrasonic sensor. When set, walk() checks it between gait cycles and
+        # aborts early if clearance drops below the reflex distance — a fast
+        # on-robot safety stop so a blocking stride can't blindly ram an obstacle.
+        self.clearance_fn: Callable[[], float | None] | None = None
+        self._reflex_stopped: bool = False
 
         if self.simulate:
             self._crawler = None
@@ -144,15 +151,31 @@ class GaitEngine:
             out.append([round(nx + (x - nx) * scale), round(ny + (y - ny) * scale), z])
         return out
 
-    def _custom_walk(self, steps: int, speed: int) -> None:
+    def _reflex_blocks(self, min_clearance_cm: float | None) -> bool:
+        """True if the forward reflex should abort the walk now: the injected
+        clearance reader sees less than the reflex distance. Inert when disabled
+        or no clearance reader is wired (e.g. ultrasonic off / simulate laptop)."""
+        if not config.REFLEX_ENABLED or self.clearance_fn is None:
+            return False
+        threshold = config.REFLEX_STOP_CM if min_clearance_cm is None else min_clearance_cm
+        if threshold <= 0:
+            return False
+        distance = self.clearance_fn()
+        return distance is not None and distance < threshold
+
+    def _custom_walk(self, steps: int, speed: int, min_clearance_cm: float | None) -> None:
         """Custom coordinate gait: play picrawler's forward keyframes via do_step,
-        with a tunable stride scale. Enters from a stand so the first frame doesn't jerk."""
+        with a tunable stride scale. Enters from a stand so the first frame doesn't jerk.
+        Checks the reflex between frames so it can stop mid-stride."""
         if self._pose != Pose.STANDING:
             self.stand()  # staged, safe entry
         scale = config.GAIT_STRIDE_SCALE
         frames = [self._scaled_frame(f, scale) for f in FORWARD_FRAMES]
         for _ in range(max(0, steps)):
             for coords in frames:
+                if self._reflex_blocks(min_clearance_cm):
+                    self._reflex_stopped = True
+                    return
                 self._do_step(coords, speed)
 
     # ----------------------------------------------------------------- #
@@ -174,21 +197,38 @@ class GaitEngine:
         finally:
             self._is_moving = False
 
-    def walk(self, steps: int, speed: int = DEFAULT_SPEED, mode: str | None = None) -> None:
+    def walk(
+        self,
+        steps: int,
+        speed: int = DEFAULT_SPEED,
+        mode: str | None = None,
+        min_clearance_cm: float | None = None,
+    ) -> None:
         # mode: "canned" (picrawler do_action) or "custom" (coordinate do_step gait).
         # Defaults to config.GAIT_MODE; the tuning tool passes mode="custom" explicitly.
         # Network protocol is unchanged — WalkCommand carries no mode.
+        # The reflex checks forward clearance between gait cycles and aborts early
+        # (sets reflex_stopped) so a blocking stride can't blindly ram an obstacle.
         mode = (mode or config.GAIT_MODE).lower()
         self._is_moving = True
+        self._reflex_stopped = False
         try:
             if mode == "custom":
-                self._custom_walk(steps, speed)
+                self._custom_walk(steps, speed, min_clearance_cm)
             else:
                 for _ in range(max(0, steps)):
+                    if self._reflex_blocks(min_clearance_cm):
+                        self._reflex_stopped = True
+                        break
                     self._do_action("forward", 1, speed)
             self._pose = Pose.STANDING
         finally:
             self._is_moving = False
+
+    @property
+    def reflex_stopped(self) -> bool:
+        """Whether the most recent walk aborted early on the forward reflex."""
+        return self._reflex_stopped
 
     def turn(self, degrees: float, speed: int = DEFAULT_SPEED) -> None:
         # Positive degrees = turn right (clockwise), negative = left.

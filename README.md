@@ -273,13 +273,33 @@ behaviors make it a *model*, not a snapshot:
   forward gap clear → **walk**; gap off to a side → **turn toward it**; boxed in →
   **rotate-to-scan** then re-pick.
 
+**Two control layers (why it stops running into things).** The costmap above is
+the *deliberative* layer — it picks a heading. Underneath it is a *fast reflex on
+the Pi*: the walk gait is blocking, so without a reflex the robot is **blind for
+the whole stride** and noses into things it "should" see. Now every `walk`
+carries a `min_clearance_cm`; the Pi reads the ultrasonic **between gait cycles**
+and aborts the stride the instant clearance drops below it
+(`PICRAWLER_REFLEX_STOP_CM`, or the brain's `WANDER_REFLEX_CM` per walk). The
+response comes back with `reflex_stopped=True`, which the brain records as a
+close obstacle and steers away from. Because the reflex — not a cautious pause —
+provides the safety, motion stays **continuous** (`WANDER_STEP_DELAY_S≈0`) rather
+than stop-and-go. This mirrors a real robot/car stack: a slow planner on top, a
+fast real-time reflex below.
+
+> **Sensor blind spot (honest):** a single fixed forward sonar + a mono camera
+> can't see objects **below both** (a low box, a floor lip). Software only
+> partly mitigates — tilt the camera down a little and keep `REFLEX_STOP_CM`
+> conservative. Fully fixing it needs a lower/downward rangefinder or a second
+> sonar (hardware — ask before assuming it).
+
 > **Scope (honest):** this is a *local, ephemeral* model of free-vs-blocked
 > *directions* around the robot (Roomba-class reactive avoidance) — **not** a
 > saved metric/3D house map. That would need depth/LiDAR + odometry/IMU this
 > robot doesn't have; see the mapping roadmap item.
 
 It's the reactive/behavior-tree fallback from the roadmap and the same
-`read sensors → model → decide → act` seam the LLM agent loop plugs into next.
+`read sensors → model → decide → act` seam the LLM agent loop plugs into next
+(the agent sets high-level intent; this layer keeps it safe in real time).
 
 ```bash
 # on the Jetson (perception server running for camera avoidance; robot elevated first):
@@ -289,23 +309,29 @@ brain/.venv/bin/python -m brain.wander --no-scan --max-steps 30 --log run.jsonl
 brain/.venv/bin/python -m brain.costmap                      # off-robot self-test
 ```
 
-For a pole and other non-COCO obstacles, run perception with **NanoOWL** loaded:
-on startup the wander loop pushes `COSTMAP_OBSTACLE_PROMPTS` (e.g. "a pole", "a
-wall", "furniture") to the perception `/prompts` endpoint so open-vocab detection
-flags them (YOLO alone only reports its fixed COCO classes; that stays a graceful
-subset).
+For a pole and other non-COCO obstacles, the camera **must run NanoOWL** — YOLO's
+fixed COCO classes never flag a pole, so on startup the wander loop **loads**
+NanoOWL (`POST /load`) and pushes `COSTMAP_OBSTACLE_PROMPTS` (e.g. "a pole", "a
+chair leg", "a wall", "furniture") to `/prompts`. If perception is still
+YOLO-only afterward it prints a **loud warning** that thin poles won't be seen
+(only sonar + the Pi reflex protect against them) — build the NanoOWL TensorRT
+engine to close that gap.
 
 Tunables (env or flags): geometry — `COSTMAP_BINS`, `COSTMAP_FOV_DEG`,
-`CAMERA_HFOV_DEG`, `SONAR_BEAM_DEG`, `FOOTPRINT_RADIUS_CM`; behavior —
-`COSTMAP_DECAY`, `COSTMAP_BLOCKED_CONF`, `COSTMAP_MAX_RANGE_CM`, `MIN_GAP_DEG`
+`CAMERA_HFOV_DEG`, `SONAR_BEAM_DEG`, `FOOTPRINT_RADIUS_CM` (default 16 — bump if
+it clips things while turning); behavior — `COSTMAP_DECAY`, `COSTMAP_BLOCKED_CONF`
+(default 0.45 — lower to steer away sooner), `COSTMAP_MAX_RANGE_CM`, `MIN_GAP_DEG`
 (0 = derived from footprint), `SCAN_EVERY`/`SCAN_RANGE_DEG`/`SCAN_STEP_DEG`;
+reflex — `WANDER_REFLEX_CM` (brain, per-walk stop margin) and
+`PICRAWLER_REFLEX_STOP_CM`/`PICRAWLER_REFLEX_ENABLED` (Pi emergency default);
 motion — `WANDER_TURN_DEG` (max turn per step), `WANDER_SPEED` (default 100),
-`WANDER_STEPS`, `WANDER_STEP_DELAY_S`; camera — `PERCEPTION_BASE_URL`,
-`WANDER_USE_CAMERA`, `COSTMAP_OBSTACLE_PROMPTS`. Ultrasonic pins/pings are
-env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/`_PINGS`, disable
-with `PICRAWLER_ULTRASONIC_ENABLED=0`). Each step emits an **experience record**
-(senses + costmap + decision + response) — with `--log`, as JSONL. Ctrl+C stops
-and sits. Runs end-to-end in simulate.
+`WANDER_STEPS`, `WANDER_STEP_DELAY_S` (default 0 = continuous); camera —
+`PERCEPTION_BASE_URL`, `WANDER_USE_CAMERA`, `COSTMAP_OBSTACLE_PROMPTS`. Ultrasonic
+pins/pings are env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/
+`_PINGS`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`). Each step emits an
+**experience record** (senses + costmap + decision + response, incl.
+`reflex_stopped`) — with `--log`, as JSONL. Ctrl+C stops and sits. Runs
+end-to-end in simulate.
 
 ### Custom gait (experimental, tune on hardware)
 

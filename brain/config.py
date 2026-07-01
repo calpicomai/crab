@@ -32,8 +32,14 @@ WANDER_SPEED: int = int(os.environ.get("WANDER_SPEED", "100"))
 # Steps to walk per "clear" decision. 1 = re-check sensors every stride (shortest
 # blind window / fastest reaction); raise for smoother-but-less-reactive motion.
 WANDER_STEPS: int = int(os.environ.get("WANDER_STEPS", "1"))
-# Idle pause between decisions. The gait itself takes time, so keep this small.
-WANDER_STEP_DELAY_S: float = float(os.environ.get("WANDER_STEP_DELAY_S", "0.1"))
+# Idle pause between decisions. The gait itself takes time and the Pi reflex now
+# guards each stride, so keep this ~0 for continuous (non-stop-and-go) motion.
+WANDER_STEP_DELAY_S: float = float(os.environ.get("WANDER_STEP_DELAY_S", "0.0"))
+# Reflex clearance (cm) the wander loop hands to each walk: the Pi aborts the
+# stride if forward clearance drops below this. Higher than the Pi's emergency
+# default (PICRAWLER_REFLEX_STOP_CM ~15) so, while wandering, it stops with margin
+# even if costmap steering was late — the last-resort layer under the costmap.
+WANDER_REFLEX_CM: float = float(os.environ.get("WANDER_REFLEX_CM", "25"))
 
 # Camera-assisted avoidance: the wander loop also polls the perception server and
 # turns away from a detection that's large (close) and roughly ahead — catching
@@ -76,13 +82,15 @@ CAMERA_HFOV_DEG: float = float(os.environ.get("CAMERA_HFOV_DEG", "54"))
 SONAR_BEAM_DEG: float = float(os.environ.get("SONAR_BEAM_DEG", "20"))
 # The robot's own half-width (cm). Obstacles are inflated by the angular size
 # this subtends at their range so the robot never aims at a gap its body won't
-# fit through ("can sense its own size").
-FOOTPRINT_RADIUS_CM: float = float(os.environ.get("FOOTPRINT_RADIUS_CM", "12"))
+# fit through ("can sense its own size"). Set generously — under-inflating is why
+# it clipped obstacles while turning.
+FOOTPRINT_RADIUS_CM: float = float(os.environ.get("FOOTPRINT_RADIUS_CM", "16"))
 # Per-cycle confidence multiplier (0-1). Lower = shorter memory = faster to
 # forget stale readings, which bounds the open-loop dead-reckoning drift (no IMU).
 COSTMAP_DECAY: float = float(os.environ.get("COSTMAP_DECAY", "0.6"))
-# A bin at/above this confidence counts as blocked when finding gaps.
-COSTMAP_BLOCKED_CONF: float = float(os.environ.get("COSTMAP_BLOCKED_CONF", "0.5"))
+# A bin at/above this confidence counts as blocked when finding gaps. Lower =
+# steer away sooner / from further out (0.45 blocks ~66cm at the default range).
+COSTMAP_BLOCKED_CONF: float = float(os.environ.get("COSTMAP_BLOCKED_CONF", "0.45"))
 # Beyond this range (cm) a sonar reading is treated as "clear" (open space), not
 # an obstacle — caps how far ahead we bother modeling.
 COSTMAP_MAX_RANGE_CM: float = float(os.environ.get("COSTMAP_MAX_RANGE_CM", "120"))

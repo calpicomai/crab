@@ -139,6 +139,20 @@ rotate-to-scan (fixed sonar), and gap steering pick the clearest wide-enough
 heading. On startup wander pushes `COSTMAP_OBSTACLE_PROMPTS` to perception
 `/prompts` when NanoOWL is loaded so the camera flags non-COCO obstacles.
 
+**Two control layers.** The costmap is the *deliberative* layer (picks a
+heading); underneath is a *fast reflex on the Pi*. Because `GaitEngine.walk` is
+blocking, the robot is blind for a whole stride — so the walk now checks forward
+clearance **between gait cycles** (`GaitEngine.clearance_fn`, injected from the
+ultrasonic in `robot/server.py`) and aborts early when it drops below
+`config.REFLEX_STOP_CM` (or `WalkCommand.min_clearance_cm`). The response carries
+`RobotStatus.reflex_stopped`; wander records that as a close obstacle and steers
+away. This is why motion is continuous, not stop-and-go. Real-time timing/reflex
+stays ON THE PI (constraint intact); the network still carries only intent + an
+optional safety margin. Known blind spot: objects below both sensors (low box) —
+mitigate with camera down-tilt + conservative reflex; a real fix is hardware
+(lower/second rangefinder — ask first). Wander also **loads** NanoOWL on startup
+(not just prompts) so the camera can actually see poles, warning if it can't.
+
 **Scope discipline:** this is a *local, ephemeral* free-vs-blocked-direction model
 (Roomba-class), **not** a persistent metric/3D house map — that needs
 depth/LiDAR + odometry/IMU this robot lacks (a later roadmap stage; ask before
@@ -159,7 +173,8 @@ runnable, and you STOP after each so the user can test on real hardware.
   CSI camera + YOLO/NanoOWL fused, loadable/unloadable, HTTP server + test);
   **ultrasonic sensor + reactive wander/avoid** (`robot/sensors.py`,
   `brain/wander.py`); **local occupancy costmap + gap steering**
-  (`brain/costmap.py`, fusing ultrasonic + camera).
+  (`brain/costmap.py`, fusing ultrasonic + camera); **continuous avoidance**
+  (fast Pi-side reflex between gait cycles + costmap; `GaitEngine.clearance_fn`).
 - **Not built yet (roadmap in README):** voice I/O, the Ollama agent loop (with
   the reactive wander as its fallback), the learning stack (episodic memory →
   skill library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM,

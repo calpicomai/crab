@@ -57,6 +57,25 @@ GAIT_MODE: str = os.environ.get("PICRAWLER_GAIT_MODE", "canned").strip().lower()
 # up on hardware until the step is as long as stays stable.
 GAIT_STRIDE_SCALE: float = float(os.environ.get("PICRAWLER_GAIT_STRIDE_SCALE", "1.0"))
 
+# --- Movement reflex (fast on-robot obstacle stop) ----------------------------
+# The walk gait is blocking, so without this the robot is blind for the whole
+# stride and can nose into an obstacle it would otherwise sense. The reflex reads
+# the forward ultrasonic BETWEEN gait cycles and aborts the walk the moment
+# clearance drops below REFLEX_STOP_CM — a real-time safety layer that lives on
+# the Pi (where the gait timing already lives). It only stops; it does NOT back up
+# (reversing blindly could hit something behind). The brain then turns away.
+# REFLEX_STOP_CM is an *emergency* distance — deliberately closer than the brain's
+# steer-away distance, so it's a last resort, not the primary avoidance. Needs the
+# ultrasonic sensor; with it disabled the reflex is inert. A per-walk override can
+# arrive on WalkCommand.min_clearance_cm.
+REFLEX_ENABLED: bool = os.environ.get("PICRAWLER_REFLEX_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+REFLEX_STOP_CM: float = float(os.environ.get("PICRAWLER_REFLEX_STOP_CM", "15"))
+
 # Pose to gently home into when the server starts, instead of leaving the legs
 # in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses
 # the same staged, low-speed motion as the stand/sit commands. "stand" only
