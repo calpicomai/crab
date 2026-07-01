@@ -64,12 +64,15 @@ See `CLAUDE.md` for the full conventions.
 
 ## Setup & run
 
+Each node uses its own virtual environment (see `CLAUDE.md`). A setup script per
+node creates the venv and installs the dependencies in one step — use it rather
+than a bare `pip install` (see [Troubleshooting](#troubleshooting)).
+
 ### Robot (Raspberry Pi)
 
 ```bash
 cd ~/crab                      # repo root, so `import shared` resolves
-python3 -m venv robot/.venv
-robot/.venv/bin/pip install -r robot/requirements.txt
+bash robot/setup.sh            # creates robot/.venv and installs deps
 # robot_hat + picrawler come from the SunFounder installer on the Pi.
 
 # Run directly (real servos):
@@ -77,6 +80,15 @@ robot/.venv/bin/python -m robot.server
 # ...or bench-test without moving servos:
 PICRAWLER_SIMULATE=1 robot/.venv/bin/python -m robot.server
 ```
+
+<details><summary>Manual venv setup (equivalent to the script)</summary>
+
+```bash
+cd ~/crab
+python3 -m venv robot/.venv
+robot/.venv/bin/pip install -r robot/requirements.txt
+```
+</details>
 
 Autostart with systemd (see the header of the unit file for full steps):
 
@@ -95,9 +107,17 @@ automatically by `do_action`. There is no calibration table in this repo.
 
 ```bash
 cd ~/crab
+bash brain/setup.sh            # creates brain/.venv and installs deps
+```
+
+<details><summary>Manual venv setup (equivalent to the script)</summary>
+
+```bash
+cd ~/crab
 python3 -m venv brain/.venv
 brain/.venv/bin/pip install -r brain/requirements.txt
 ```
+</details>
 
 Configure how to reach the Pi in `brain/config.py` (defaults to the Pi mDNS
 hostname `picrawler.local:8000`). Override without editing code:
@@ -122,6 +142,15 @@ Both nodes run on a laptop with no SunFounder hardware: the `GaitEngine`
 auto-detects the missing `picrawler` import and drops into **simulate** mode
 (logs the action, returns success). Run the server with `PICRAWLER_SIMULATE=1`
 and point the test at `--base-url http://localhost:8000`.
+
+### Troubleshooting
+
+- **`error: externally-managed-environment`** (PEP 668, common on Raspberry Pi
+  OS Bookworm): you ran `pip install` against the system Python instead of a
+  venv. Run the node's `setup.sh` (or the manual venv steps above) and install
+  into `robot/.venv` / `brain/.venv`. Do **not** pass `--break-system-packages` —
+  it pollutes the system Python and defeats the per-node isolation the project
+  relies on.
 
 ## Roadmap (documented, NOT built yet)
 
