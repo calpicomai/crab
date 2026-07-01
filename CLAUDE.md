@@ -118,7 +118,7 @@ lives in `brain/perception/types.py` (brain-internal, **not** `shared/`; only th
 camera path constants are shared) and is the perception half of the
 experience-record seam.
 
-## Autonomy (reactive wander/avoid) & ultrasonic
+## Autonomy (wander/avoid via local costmap) & ultrasonic
 
 The **ultrasonic sensor is on the Pi** (`robot/sensors.py:DistanceSensor`, via
 `robot_hat` Ultrasonic, default pins trig=`D2`/echo=`D3`, env-overridable). Its
@@ -126,12 +126,28 @@ reading rides on `RobotStatus.distance_cm` (populated in the server's `/status`
 handler), so the brain gets clearance without a new endpoint. No robot_hat →
 simulate (synthetic clearance).
 
-`brain/wander.py` is the first autonomous behavior and the roadmap's reactive /
-behavior-tree fallback: a model-free loop that reads `distance_cm` and turns away
-when blocked, else steps forward. It's the `read sensors → decide → act` seam the
-Ollama agent loop will plug into (agent decides; wander is the fallback). Each
-step emits an **experience record** (distance + decision + response; JSONL via
-`--log`) — the concrete first use of the experience-record seam.
+`brain/wander.py` is the autonomous fallback (reactive / behavior-tree from the
+roadmap). It no longer OR's the two senses — it fuses them into a
+**`brain/costmap.py:LocalCostmap`** and steers by it. The costmap is a
+robot-centered **polar occupancy histogram** (VFH): bins over ±`COSTMAP_FOV_DEG`,
+ultrasonic writes accurate range at the forward cone, camera writes a bearing +
+coarse range per detection; evidence combines by **max, never overwrite** (so a
+camera-seen pole the sonar beam misses isn't cleared by a "sonar sees nothing"
+reading). Size-aware inflation (`FOOTPRINT_RADIUS_CM`), short-memory decay +
+open-loop dead-reckoning (rotate the histogram by the *commanded* turn — no IMU),
+rotate-to-scan (fixed sonar), and gap steering pick the clearest wide-enough
+heading. On startup wander pushes `COSTMAP_OBSTACLE_PROMPTS` to perception
+`/prompts` when NanoOWL is loaded so the camera flags non-COCO obstacles.
+
+**Scope discipline:** this is a *local, ephemeral* free-vs-blocked-direction model
+(Roomba-class), **not** a persistent metric/3D house map — that needs
+depth/LiDAR + odometry/IMU this robot lacks (a later roadmap stage; ask before
+assuming hardware). Don't reshape it into a world map.
+
+It's still the `read sensors → model → decide → act` seam the LLM agent loop
+plugs into (agent decides; wander is the fallback). Each step emits an
+**experience record** (senses + costmap + decision + response; JSONL via
+`--log`), and the costmap is a natural consumer/producer of that seam.
 
 ## Workflow: staged, STOP between stages
 
@@ -142,7 +158,8 @@ runnable, and you STOP after each so the user can test on real hardware.
   sit, per-leg diagnostic, home-on-startup); **Perception** (`brain/perception/`:
   CSI camera + YOLO/NanoOWL fused, loadable/unloadable, HTTP server + test);
   **ultrasonic sensor + reactive wander/avoid** (`robot/sensors.py`,
-  `brain/wander.py`).
+  `brain/wander.py`); **local occupancy costmap + gap steering**
+  (`brain/costmap.py`, fusing ultrasonic + camera).
 - **Not built yet (roadmap in README):** voice I/O, the Ollama agent loop (with
   the reactive wander as its fallback), the learning stack (episodic memory →
   skill library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM,
