@@ -237,43 +237,75 @@ Pi→MJPEG→Jetson→detect link runs off-hardware. A `PerceptionSnapshot` (see
 `brain/perception/types.py`) is the perception half of the future experience
 record.
 
-### Autonomy: wander + avoid (`brain/wander.py`)
+### Autonomy: wander + avoid (`brain/wander.py` + `brain/costmap.py`)
 
-The first autonomous behavior — the robot moves on its own and steers around
-obstacles, no LLM. A reactive loop on the Jetson fuses **two** obstacle senses:
+The robot's autonomous fallback — it moves on its own and steers around
+obstacles, no LLM. Instead of reacting to one sensor at a time, it fuses both
+senses into a **local occupancy costmap** (`brain/costmap.py:LocalCostmap`) and
+steers toward the clearest gap.
 
-- **ultrasonic** — forward clearance (`get_status().distance_cm`, sensed on the
-  Pi via `robot_hat`, pins trig=`D2`/echo=`D3`). Fast, but a narrow beam misses
-  thin / off-axis things (e.g. a pole).
-- **camera** — the perception server's `/snapshot`; a detection that's large
-  (close) and roughly ahead counts as an obstacle and the robot turns away from
-  its side. Catches what the ultrasonic misses. Unreachable → logs once and
-  continues ultrasonic-only. (For arbitrary obstacles like a pole, run perception
-  with NanoOWL + obstacle prompts — YOLO only flags its COCO classes.)
+**The costmap** is a robot-centered **polar histogram** (Vector Field Histogram
+style): the forward arc is split into `COSTMAP_BINS` angular bins over
+±`COSTMAP_FOV_DEG` (0° = straight ahead), each holding an obstacle *confidence*
+and nearest *range*. Two senses write in where each is strong:
 
-Each cycle: if either sense is blocked → **turn away**; else → **step forward**.
-Reaction latency is kept low — it re-checks the senses **every stride**
-(`WANDER_STEPS=1`), the ultrasonic read uses few ping retries
-(`PICRAWLER_ULTRASONIC_PINGS`), and the camera path reads the perception server's
-latest frame. It's the reactive/behavior-tree fallback from the roadmap and the
-`read sensors → decide → act` seam the Ollama agent loop plugs into next.
+- **ultrasonic** (`get_status().distance_cm`, sensed on the Pi, pins `D2`/`D3`) —
+  an accurate range across the forward sonar cone (`SONAR_BEAM_DEG`).
+- **camera** (the perception server's `/snapshot`) — a *bearing* per detection
+  (from its pixel x-center and `CAMERA_HFOV_DEG`) plus a coarse range from box
+  size. Catches wide/off-axis things the narrow sonar beam misses.
+
+Evidence combines by **max, never overwrite** — so a thin pole the sonar beam
+misses but the camera sees stays blocked instead of being cleared by a "sonar
+sees nothing ahead" reading (the case that let the robot walk into a pole). Four
+behaviors make it a *model*, not a snapshot:
+
+- **Rotate-to-scan** — the sonar is fixed forward, so to fill the off-center bins
+  the robot periodically turns its body in increments and reads at each
+  (`SCAN_EVERY`, `SCAN_RANGE_DEG`, `SCAN_STEP_DEG`).
+- **Size-aware inflation** — each obstacle is widened by the angular size the
+  robot's own half-width (`FOOTPRINT_RADIUS_CM`) subtends at its range, so it
+  never aims at a gap the body won't fit through.
+- **Short-memory decay + dead-reckoning** — every cycle confidences fade
+  (`COSTMAP_DECAY`); after each turn the histogram is rotated by the *commanded*
+  degrees (open-loop, no IMU — which is why memory is short).
+- **Gap steering** — pick the widest-enough passable gap nearest straight-ahead:
+  forward gap clear → **walk**; gap off to a side → **turn toward it**; boxed in →
+  **rotate-to-scan** then re-pick.
+
+> **Scope (honest):** this is a *local, ephemeral* model of free-vs-blocked
+> *directions* around the robot (Roomba-class reactive avoidance) — **not** a
+> saved metric/3D house map. That would need depth/LiDAR + odometry/IMU this
+> robot doesn't have; see the mapping roadmap item.
+
+It's the reactive/behavior-tree fallback from the roadmap and the same
+`read sensors → model → decide → act` seam the LLM agent loop plugs into next.
 
 ```bash
 # on the Jetson (perception server running for camera avoidance; robot elevated first):
 ROBOT_HOST=10.1.50.13 brain/.venv/bin/python -m brain.wander
 brain/.venv/bin/python -m brain.wander --no-camera           # ultrasonic only
-brain/.venv/bin/python -m brain.wander --min-cm 40 --turn-deg 45 --log run.jsonl
+brain/.venv/bin/python -m brain.wander --no-scan --max-steps 30 --log run.jsonl
+brain/.venv/bin/python -m brain.costmap                      # off-robot self-test
 ```
 
-Tunables (env or flags): `WANDER_MIN_CM` (stop distance, default 35),
-`WANDER_TURN_DEG`, `WANDER_SPEED` (gait speed, default 100), `WANDER_STEPS`
-(default 1 = re-check every stride), `WANDER_STEP_DELAY_S`; camera:
-`PERCEPTION_BASE_URL`, `WANDER_USE_CAMERA`, `WANDER_OBSTACLE_AREA` (fraction of
-frame = "close"), `WANDER_CENTER_BAND` (how central = "in the way"). Ultrasonic
-pins/pings are env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/
-`_PINGS`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`). Each step emits an
-**experience record** (senses + decision + response) — with `--log`, as JSONL.
-Ctrl+C stops and sits. Runs end-to-end in simulate.
+For a pole and other non-COCO obstacles, run perception with **NanoOWL** loaded:
+on startup the wander loop pushes `COSTMAP_OBSTACLE_PROMPTS` (e.g. "a pole", "a
+wall", "furniture") to the perception `/prompts` endpoint so open-vocab detection
+flags them (YOLO alone only reports its fixed COCO classes; that stays a graceful
+subset).
+
+Tunables (env or flags): geometry — `COSTMAP_BINS`, `COSTMAP_FOV_DEG`,
+`CAMERA_HFOV_DEG`, `SONAR_BEAM_DEG`, `FOOTPRINT_RADIUS_CM`; behavior —
+`COSTMAP_DECAY`, `COSTMAP_BLOCKED_CONF`, `COSTMAP_MAX_RANGE_CM`, `MIN_GAP_DEG`
+(0 = derived from footprint), `SCAN_EVERY`/`SCAN_RANGE_DEG`/`SCAN_STEP_DEG`;
+motion — `WANDER_TURN_DEG` (max turn per step), `WANDER_SPEED` (default 100),
+`WANDER_STEPS`, `WANDER_STEP_DELAY_S`; camera — `PERCEPTION_BASE_URL`,
+`WANDER_USE_CAMERA`, `COSTMAP_OBSTACLE_PROMPTS`. Ultrasonic pins/pings are
+env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/`_PINGS`, disable
+with `PICRAWLER_ULTRASONIC_ENABLED=0`). Each step emits an **experience record**
+(senses + costmap + decision + response) — with `--log`, as JSONL. Ctrl+C stops
+and sits. Runs end-to-end in simulate.
 
 ### Custom gait (experimental, tune on hardware)
 
@@ -370,9 +402,11 @@ standing individually without stalling, `stand` via the server should be stable.
 1. ✅ **Perception** — YOLO + NanoOWL detectors feeding the brain, loadable/
    unloadable, served over HTTP (`brain/perception/`). *Built — see
    [Perception (Jetson)](#perception-jetson).*
-2. ✅ **Reactive autonomy** — ultrasonic-driven wander + obstacle avoidance
-   (`brain/wander.py`); the model-free `read→decide→act` baseline. *Built — see
-   [Autonomy: wander + avoid](#autonomy-wander--avoid-brainwanderpy).*
+2. ✅ **Reactive autonomy** — wander + obstacle avoidance steered by a fused
+   ultrasonic + camera **local occupancy costmap** with gap steering
+   (`brain/wander.py` + `brain/costmap.py`); the model-free
+   `read→model→decide→act` baseline. *Built — see
+   [Autonomy: wander + avoid](#autonomy-wander--avoid-brainwanderpy--braincostmappy).*
 3. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
 4. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
    abilities exposed as tools that call `RobotClient`; falls back to the reactive
@@ -386,9 +420,10 @@ standing individually without stalling, `stand` via the server should be stable.
    - **Offline fine-tune** — periodically fine-tune the small LLM on collected
      experience logs (data collection is cheap; on-device training is
      constrained by 8GB).
-6. **Spatial mapping / "know the house"** — visual SLAM or occupancy mapping
-   from the camera (optionally a depth sensor / LiDAR — revisit hardware at this
-   stage). The map becomes the "places" layer episodic memory attaches to. Runs
+6. **Spatial mapping / "know the house"** — a *persistent, metric* map (visual
+   SLAM or a global occupancy grid), the "places" layer episodic memory attaches
+   to. Distinct from the ephemeral local costmap in item 2: a saved world map
+   needs depth/LiDAR + odometry/IMU, so **revisit hardware at this stage**. Runs
    as a loadable/unloadable mode given the RAM budget.
 7. **Real custom gait** — replace picrawler's canned `do_action` calls in
    `robot/gait.py` with a coordinate-based gait via `crawler.do_step(...)`,
