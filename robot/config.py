@@ -41,6 +41,10 @@ ULTRASONIC_ENABLED: bool = os.environ.get("PICRAWLER_ULTRASONIC_ENABLED", "1").s
 }
 ULTRASONIC_TRIG: str = os.environ.get("PICRAWLER_ULTRASONIC_TRIG", "D2")
 ULTRASONIC_ECHO: str = os.environ.get("PICRAWLER_ULTRASONIC_ECHO", "D3")
+# Ping attempts per read. robot_hat retries up to this many times for a valid
+# echo; fewer = lower worst-case latency (returns "no echo" sooner) at the cost of
+# a few more spurious misses. Kept low so the wander loop reacts quickly.
+ULTRASONIC_PINGS: int = int(os.environ.get("PICRAWLER_ULTRASONIC_PINGS", "2"))
 
 # Walk gait selection (see robot/gait.py). "canned" uses picrawler's built-in
 # do_action('forward') — the proven default. "custom" plays picrawler's real

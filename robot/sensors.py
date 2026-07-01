@@ -49,7 +49,11 @@ class DistanceSensor:
         if self.simulate or self._sonar is None:
             return _SIMULATED_CM
         try:  # pragma: no cover - hardware
-            distance = self._sonar.read()
+            # Fewer ping retries -> lower worst-case latency (see config).
+            try:
+                distance = self._sonar.read(config.ULTRASONIC_PINGS)
+            except TypeError:  # older robot_hat: read() takes no args
+                distance = self._sonar.read()
         except Exception as exc:  # noqa: BLE001
             logger.warning("ultrasonic read failed: %s", exc)
             return None
