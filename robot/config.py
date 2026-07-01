@@ -35,3 +35,17 @@ LEG_SETTLE_S: float = float(os.environ.get("PICRAWLER_LEG_SETTLE_S", "0.2"))
 # the same staged, low-speed motion as the stand/sit commands. "stand" only
 # makes sense once every leg is calibrated (an uncalibrated leg could stall).
 HOME_ON_START: str = os.environ.get("PICRAWLER_HOME_ON_START", "stand").strip().lower()
+
+# Camera (on the Pi) served as MJPEG to the Jetson. Disable with CAMERA_ENABLED=0.
+# picamera2 (system package, visible to the --system-site-packages venv) captures;
+# if it's missing the camera serves synthetic frames so the video link still runs.
+CAMERA_ENABLED: bool = os.environ.get("PICRAWLER_CAMERA_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+CAMERA_WIDTH: int = int(os.environ.get("PICRAWLER_CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT: int = int(os.environ.get("PICRAWLER_CAMERA_HEIGHT", "480"))
+CAMERA_FPS: int = int(os.environ.get("PICRAWLER_CAMERA_FPS", "15"))
+CAMERA_QUALITY: int = int(os.environ.get("PICRAWLER_CAMERA_QUALITY", "80"))

@@ -15,10 +15,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from fastapi.responses import StreamingResponse
 
 from shared import (
     ACTION_PATHS,
+    CAMERA_FRAME_PATH,
+    CAMERA_STREAM_PATH,
     HEALTH_PATH,
     Action,
     CommandResponse,
@@ -31,6 +34,7 @@ from shared import (
 )
 
 from . import config
+from .camera import PiCamera
 from .gait import GaitEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -38,6 +42,19 @@ logger = logging.getLogger("picrawler.server")
 
 # Single engine instance, built at import and shared across requests.
 engine = GaitEngine(simulate=config.SIMULATE)
+
+# Camera (optional) — captures on the Pi, served as MJPEG to the Jetson.
+camera = (
+    PiCamera(
+        width=config.CAMERA_WIDTH,
+        height=config.CAMERA_HEIGHT,
+        fps=config.CAMERA_FPS,
+        quality=config.CAMERA_QUALITY,
+        simulate=config.SIMULATE,
+    )
+    if config.CAMERA_ENABLED
+    else None
+)
 
 
 def _home_on_start() -> None:
@@ -62,8 +79,12 @@ def _home_on_start() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if camera is not None:
+        camera.start()
     _home_on_start()
     yield
+    if camera is not None:
+        camera.stop()
 
 
 app = FastAPI(title="PiCrawler Robot Server", version="0.1.0", lifespan=lifespan)
@@ -72,7 +93,33 @@ app = FastAPI(title="PiCrawler Robot Server", version="0.1.0", lifespan=lifespan
 @app.get(HEALTH_PATH)
 def health() -> dict[str, object]:
     """Liveness probe for systemd / monitoring. Does not move the robot."""
-    return {"ok": True, "simulate": engine.simulate}
+    return {
+        "ok": True,
+        "simulate": engine.simulate,
+        "camera": None if camera is None else {"enabled": True, "simulate": camera.simulate},
+    }
+
+
+@app.get(CAMERA_STREAM_PATH)
+def camera_stream() -> StreamingResponse:
+    """MJPEG stream (multipart/x-mixed-replace) the Jetson perception pulls from."""
+    if camera is None:
+        return Response(status_code=503, content="camera disabled")
+    return StreamingResponse(
+        camera.mjpeg_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get(CAMERA_FRAME_PATH)
+def camera_frame() -> Response:
+    """A single most-recent JPEG (handy for a quick check / low-rate pulls)."""
+    if camera is None:
+        return Response(status_code=503, content="camera disabled")
+    frame = camera.get_frame()
+    if frame is None:
+        return Response(status_code=503, content="no frame yet")
+    return Response(content=frame, media_type="image/jpeg")
 
 
 @app.post(ACTION_PATHS[Action.WALK], response_model=CommandResponse)

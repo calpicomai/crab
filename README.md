@@ -129,10 +129,17 @@ bash brain/setup.sh            # creates brain/.venv and installs deps
 
 ```bash
 cd ~/crab
-python3 -m venv brain/.venv
+python3 -m venv --system-site-packages brain/.venv   # see Jetson's system cv2/torch
 brain/.venv/bin/pip install -r brain/requirements.txt
 ```
 </details>
+
+`brain/setup.sh` creates the venv with **`--system-site-packages`** so it can
+import the Jetson's system OpenCV (with GStreamer, for the CSI camera) and CUDA
+`torch`. Those and `ultralytics` are **not** in a base flash — install them (see
+[Perception (Jetson)](#perception-jetson) and `brain/requirements-perception.txt`).
+Until they're present, the perception server runs but falls back to synthetic
+frames + the dummy detector (`simulate:true`).
 
 Configure how to reach the Pi in `brain/config.py` (defaults to the Pi mDNS
 hostname `picrawler.local:8000`). Override without editing code:
@@ -152,32 +159,51 @@ brain/.venv/bin/python -m brain.test_movement
 > **Safety:** on the first real run, elevate the robot / keep the legs clear, and
 > see [Movement safety / brownout](#movement-safety--brownout) below.
 
-### Perception (Jetson)
+### Perception
 
-The robot's "eyes": a CSI camera feeds a `PerceptionEngine` that runs object
-detection and serves results over HTTP. Two detector backends behind one engine,
-each **loadable/unloadable** (the 8GB Jetson can't hold both *and* the future
-LLM+Whisper+Piper — free one on demand):
+The robot's "eyes" span both nodes: the **camera is on the Pi** (CSI, captured
+with picamera2) and streamed as **MJPEG** over the LAN; the **Jetson** pulls that
+stream and runs the detectors (the Pi 4B can't). Two detector backends behind one
+`PerceptionEngine`, each **loadable/unloadable** (the 8GB Jetson can't hold both
+*and* the future LLM+Whisper+Piper — free one on demand):
 
 - **YOLO** (Ultralytics) — fast, fixed COCO classes. Default backend.
 - **NanoOWL** — open-vocabulary, text-prompted ("a person", "a red ball"); the
   future agent loop steers it at runtime via `/prompts`.
 
-Install (base subset runs the server + simulate path anywhere; the detectors are
-JetPack-specific — see the comments in the requirements file):
+**Pi side** — the robot server serves the camera automatically:
+
+```bash
+# picamera2 is normally preinstalled on Raspberry Pi OS Bookworm; else:
+sudo apt install -y python3-picamera2      # visible to the --system-site-packages venv
+robot/.venv/bin/python -m robot.server     # serves /camera/stream (MJPEG) + /camera/frame
+curl http://<pi>:8000/camera/frame -o test.jpg    # quick check
+```
+
+**Jetson side** — install the detectors (after `brain/setup.sh`). The helper
+installs them the **right** way; note the Jetson does **not** need
+OpenCV-with-GStreamer (the camera pipeline is on the Pi — it just decodes MJPEG):
 
 ```bash
 cd ~/crab
-brain/.venv/bin/pip install -r brain/requirements-perception.txt
-# then, per NVIDIA's steps: Jetson torch/torchvision -> ultralytics (YOLO),
-# and transformers + torch2trt + TensorRT + nanoowl + a built encoder engine (NanoOWL).
+bash brain/setup_perception.sh
+# torch is the one JetPack-version-specific piece — install NVIDIA's Jetson wheel,
+# or let the script do it by passing the jetson-ai-lab index:
+TORCH_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 bash brain/setup_perception.sh
 ```
 
-Run the perception server (port 8100) and query it:
+`torch`/`opencv` deliberately aren't pip requirements — on Jetson the PyPI wheels
+are the wrong builds (torch: no CUDA). NanoOWL stays manual (`torch2trt` + a built
+TensorRT engine); see `brain/requirements-perception.txt`. The base subset alone
+runs the server + simulate path anywhere.
+
+Run the perception server (port 8100) and query it. It reads the camera from the
+robot at `brain/config.py`'s `BASE_URL` + `/camera/stream` (override with
+`PERCEPTION_CAMERA_URL`):
 
 ```bash
 brain/.venv/bin/python -m brain.perception.server
-curl localhost:8100/health
+curl localhost:8100/health                                     # simulate:false when the Pi stream is live
 curl localhost:8100/snapshot                                   # detections for one frame
 curl -XPOST localhost:8100/prompts -H 'content-type: application/json' \
      -d '{"prompts":["a person","a ball"]}'                    # steer NanoOWL
@@ -192,11 +218,11 @@ brain/.venv/bin/python -m brain.test_perception --frames 5
 brain/.venv/bin/python -m brain.test_perception --backend nanoowl --prompts "a person,a ball"
 ```
 
-CSI camera settings (sensor id, resolution, `flip-method`) are env-overridable —
-see `brain/perception/config.py` (`PERCEPTION_CAMERA_*`). Set
-`PERCEPTION_SIMULATE=1` to run on synthetic frames + a dummy detector with no
-camera or models (dev/CI). A `PerceptionSnapshot` (see `brain/perception/types.py`)
-is the perception half of the future experience record.
+Set `PERCEPTION_SIMULATE=1` (Jetson) / `PICRAWLER_SIMULATE=1` (Pi) to run on
+synthetic frames + a dummy detector with no camera or models — the whole
+Pi→MJPEG→Jetson→detect link runs off-hardware. A `PerceptionSnapshot` (see
+`brain/perception/types.py`) is the perception half of the future experience
+record.
 
 ### Off-hardware dev
 
@@ -218,6 +244,13 @@ and point the test at `--base-url http://localhost:8000`.
   the system-installed SunFounder libs. Recreate it **with**
   `--system-site-packages` (re-run `robot/setup.sh`, which now does this), and
   confirm they're installed in the system Python.
+- **Perception `/snapshot` returns `simulate:true` / `backends:["dummy"]`** on the
+  Jetson: the camera and/or detector aren't available, so the engine fell back.
+  Check the server startup log for `CSI camera unavailable` / `could not load
+  backend`. Fixes: (a) recreate `brain/.venv` **with** `--system-site-packages`
+  (re-run `brain/setup.sh`); (b) install `cv2` with GStreamer and the Jetson
+  `torch` wheel + `ultralytics` — see [Perception (Jetson)](#perception-jetson).
+  `brain/setup.sh` prints which of `cv2` / `torch` / `ultralytics` are visible.
 
 ### Movement safety / brownout
 

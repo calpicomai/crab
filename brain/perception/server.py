@@ -45,7 +45,12 @@ class BackendBody(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    return {"ok": True, "simulate": engine.simulate, "backends": engine.loaded_backends()}
+    return {
+        "ok": True,
+        "simulate": engine.simulate or engine.camera.simulate,
+        "backends": engine.loaded_backends(),
+        "camera_url": config.CAMERA_URL,
+    }
 
 
 @app.get("/snapshot", response_model=PerceptionSnapshot)

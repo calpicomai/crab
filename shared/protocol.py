@@ -60,6 +60,12 @@ LEG_COUNT: int = 4
 # Liveness endpoint (not an Action — no robot movement, used by systemd/monitoring).
 HEALTH_PATH: str = "/health"
 
+# Camera lives on the robot (Pi). It serves frames over the LAN; the Jetson brain
+# pulls them for perception. These are not Actions (binary image data, not the
+# command/response envelope) — just canonical paths both sides agree on.
+CAMERA_STREAM_PATH: str = "/camera/stream"  # multipart/x-mixed-replace MJPEG
+CAMERA_FRAME_PATH: str = "/camera/frame"  # single image/jpeg
+
 
 class Pose(str, Enum):
     """Coarse body pose the robot tracks between commands."""
