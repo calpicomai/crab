@@ -1,0 +1,34 @@
+# systemd unit to autostart the PiCrawler command server on the Raspberry Pi.
+#
+# Install:
+#   1. Clone the repo on the Pi, e.g. to /home/pi/crab
+#   2. Create the venv and install deps:
+#        cd /home/pi/crab
+#        python3 -m venv robot/.venv
+#        robot/.venv/bin/pip install -r robot/requirements.txt
+#   3. Edit the paths / User below to match your setup if it differs.
+#   4. sudo cp robot/systemd/picrawler-server.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now picrawler-server
+#   5. Check it:  systemctl status picrawler-server ; curl localhost:8000/health
+#
+# WorkingDirectory is the repo root so that `import shared` resolves.
+
+[Unit]
+Description=PiCrawler Robot Command Server (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/crab
+# Set PICRAWLER_SIMULATE=1 here to bench-test without moving servos.
+Environment=PICRAWLER_HOST=0.0.0.0
+Environment=PICRAWLER_PORT=8000
+ExecStart=/home/pi/crab/robot/.venv/bin/uvicorn robot.server:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

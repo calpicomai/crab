@@ -1,0 +1,13 @@
+# Robot node (Raspberry Pi 4B) dependencies — kept minimal.
+# The Pi only runs the command server and the gait engine.
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+
+# Hardware libraries — provided by SunFounder, installed on the Pi.
+# Not available on a dev laptop; the GaitEngine falls back to simulate mode
+# when these cannot be imported. Uncomment on the Pi if not already present
+# via the SunFounder installer:
+# robot_hat
+# picrawler
