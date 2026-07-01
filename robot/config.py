@@ -29,3 +29,9 @@ SIMULATE: bool = os.environ.get("PICRAWLER_SIMULATE", "").strip().lower() in {
 # marginal battery.
 STAND_SPEED: int = int(os.environ.get("PICRAWLER_STAND_SPEED", "40"))
 LEG_SETTLE_S: float = float(os.environ.get("PICRAWLER_LEG_SETTLE_S", "0.2"))
+
+# Pose to gently home into when the server starts, instead of leaving the legs
+# in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses
+# the same staged, low-speed motion as the stand/sit commands. "stand" only
+# makes sense once every leg is calibrated (an uncalibrated leg could stall).
+HOME_ON_START: str = os.environ.get("PICRAWLER_HOME_ON_START", "stand").strip().lower()

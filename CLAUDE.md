@@ -63,6 +63,11 @@ shared 2×18650 rail. Keep motion staged/slow. `test_leg(leg, speed)` +
 mis-calibrated/mis-wired/stalling leg. See the README "Movement safety /
 brownout" section.
 
+On startup the server homes to `config.HOME_ON_START` (`stand`/`sit`/`none`,
+default `stand`) via the same staged motion, so it doesn't sit in picrawler's
+splayed power-on pose. Homing runs from the app **lifespan** hook (not `main()`)
+so it also fires under the systemd unit (`uvicorn robot.server:app`).
+
 ## Calibration convention
 
 Calibration is done with the SunFounder calibration tool; offsets are stored in
