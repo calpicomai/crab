@@ -333,6 +333,44 @@ pins/pings are env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/
 `reflex_stopped`) — with `--log`, as JSONL. Ctrl+C stops and sits. Runs
 end-to-end in simulate.
 
+### LLM brain: multimodal agent loop (`brain/agent/`)
+
+The deliberative layer on top of the reactive avoidance: a **multimodal LLM that
+sees the camera** and drives the robot's abilities as tools. It **free-roams and
+narrates** by default (there's no voice input yet) — each tick it looks at one
+camera frame, says what it sees and why, and picks ONE high-level action; pass a
+goal to steer it.
+
+```bash
+# on the Jetson, with a local model server running (see brain/setup_agent.sh):
+brain/.venv/bin/python -m brain.agent.loop                     # free-roam + narrate
+brain/.venv/bin/python -m brain.agent.loop --goal "find a person"
+brain/.venv/bin/python -m brain.agent.loop --sim --max-ticks 5 # canned policy, no model
+```
+
+- **Backend-agnostic, local, default llama.cpp.** The agent speaks the
+  OpenAI-compatible chat API (`openai` SDK) pointed at a **local** server —
+  `llama-server` from llama.cpp by default (`LLM_BASE_URL=http://localhost:8080/v1`).
+  Swap to Ollama or any compatible server by changing `LLM_BASE_URL`; no cloud.
+- **Multimodal.** It sends the current camera frame (from the robot's
+  `/camera/frame`) as an image to a small VLM (default **Qwen2.5-VL-3B**; SmolVLM2
+  is a lighter fallback). Set `LLM_MULTIMODAL=0` with a text model to run on the
+  perception text summary instead.
+- **Two control layers.** The LLM sets *intent* (slow, ~seconds/decision on an
+  Orin Nano); the Pi reflex + costmap keep it safe in **real time**. Movement
+  tools go through the reflex-protected client, so a bad decision still can't ram
+  something. If the LLM is unreachable or errors, the tick **falls back** to one
+  reactive costmap step.
+- **RAM (8GB).** The VLM does the seeing, so on startup the agent unloads the
+  YOLO/NanoOWL detectors (`AGENT_FREE_PERCEPTION_RAM=1`; `--keep-perception` to
+  skip). In agent mode the reactive safety leans on sonar + reflex.
+
+Tunables: `LLM_BASE_URL`, `LLM_MODEL`, `LLM_MULTIMODAL`, `AGENT_TICK_S`,
+`AGENT_TEMPERATURE`, `AGENT_MAX_TOKENS`, `AGENT_REFLEX_CM`,
+`AGENT_FREE_PERCEPTION_RAM`, `AGENT_SIMULATE`, `AGENT_SYSTEM_PROMPT`. Each tick
+emits an **experience record** (frame ref + status + goal + narration + action +
+response) — with `--log`, as JSONL. Runs end-to-end in simulate (`--sim`).
+
 ### Custom gait (experimental, tune on hardware)
 
 `walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
@@ -433,10 +471,13 @@ standing individually without stalling, `stand` via the server should be stable.
    (`brain/wander.py` + `brain/costmap.py`); the model-free
    `read→model→decide→act` baseline. *Built — see
    [Autonomy: wander + avoid](#autonomy-wander--avoid-brainwanderpy--braincostmappy).*
-3. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
-4. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
-   abilities exposed as tools that call `RobotClient`; falls back to the reactive
-   wander when the LLM is unavailable/unsure.
+3. ✅ **Multimodal LLM agent loop** — a small VLM (default Qwen2.5-VL-3B via
+   llama.cpp, OpenAI-compatible + swappable) that sees the camera and drives the
+   robot's abilities as tools; free-roams + narrates, falls back to the reactive
+   costmap when the LLM is unavailable. *Built — see
+   [LLM brain: multimodal agent loop](#llm-brain-multimodal-agent-loop-brainagent).*
+4. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS
+   (turns the agent's narration into speech and adds spoken commands).
 5. **Learning stack** (all local, staged):
    - **Episodic memory** — SQLite / vector store of interactions, people,
      places, commands, and user corrections the LLM retrieves from (foundation).

@@ -163,6 +163,28 @@ plugs into (agent decides; wander is the fallback). Each step emits an
 **experience record** (senses + costmap + decision + response; JSONL via
 `--log`), and the costmap is a natural consumer/producer of that seam.
 
+## LLM brain (`brain/agent/`) — deliberative layer
+
+The agent loop is the *deliberative* top layer over the reactive avoidance. A
+**multimodal LLM** (default **Qwen2.5-VL-3B** served by llama.cpp) sees the
+robot's camera frame each tick and calls the robot's abilities as **OpenAI-style
+tools** (`walk`/`turn`/`stand`/`sit`/`get_status`; `test_leg` is excluded). It
+**free-roams + narrates** by default (no voice yet), with an optional `--goal`.
+
+- **Backend-agnostic, local, no cloud.** It speaks the OpenAI-compatible chat API
+  (`openai` SDK) at `LLM_BASE_URL` — a local `llama-server` by default; swap to
+  Ollama/etc. by config, no code change. `LLM_MULTIMODAL=0` + a text model uses a
+  scene-text summary instead of the image.
+- **Two layers / safety.** The LLM sets slow intent; the **Pi reflex + costmap**
+  own real-time safety. Movement tools go through the reflex-protected
+  `RobotClient`, and if the LLM is unreachable/errors the tick falls back to one
+  reactive `LocalCostmap` step. Never rely on the LLM for collision avoidance.
+- **RAM (8GB):** the VLM does the seeing, so the agent unloads YOLO/NanoOWL on
+  startup (`AGENT_FREE_PERCEPTION_RAM`). `AGENT_SIMULATE`/`--sim` runs a canned
+  policy so the whole loop is testable off-GPU.
+- Same **experience-record** seam (`--log` JSONL) as wander. `brain/agent/`:
+  `config.py`, `tools.py`, `llm.py` (real + mock brain), `loop.py`.
+
 ## Workflow: staged, STOP between stages
 
 Do NOT build the whole system at once. Each stage must be independently
@@ -174,9 +196,10 @@ runnable, and you STOP after each so the user can test on real hardware.
   **ultrasonic sensor + reactive wander/avoid** (`robot/sensors.py`,
   `brain/wander.py`); **local occupancy costmap + gap steering**
   (`brain/costmap.py`, fusing ultrasonic + camera); **continuous avoidance**
-  (fast Pi-side reflex between gait cycles + costmap; `GaitEngine.clearance_fn`).
-- **Not built yet (roadmap in README):** voice I/O, the Ollama agent loop (with
-  the reactive wander as its fallback), the learning stack (episodic memory →
+  (fast Pi-side reflex between gait cycles + costmap; `GaitEngine.clearance_fn`);
+  **multimodal LLM agent loop** (`brain/agent/`: a VLM sees the camera + calls
+  robot abilities as tools, free-roam + narrate, reactive fallback).
+- **Not built yet (roadmap in README):** voice I/O, the learning stack (episodic memory →
   skill library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM,
   and the real custom gait.
 
