@@ -406,19 +406,28 @@ What makes it a pet:
   startled / bored / sleepy, shifting from what happens (sees a person → excited;
   a close call → startled; nothing for a while → bored → rests). Mood colors both
   its words and its pace.
-- **Expressive gestures** (`brain/pet/expressions.py`) — a happy wiggle, a curious
-  head-tilt, resting when sleepy — all small, reflex-protected moves.
+- **Dog-like emoting** (`brain/pet/expressions.py`) — it doesn't just walk, it
+  *emotes* with its whole body: an excited **wag** and happy **spin** (zoomies),
+  a **play-bow**, **ears-up perk**, curious **head-tilt**, **sniff/investigate**,
+  a scared **cower**, an eager **pounce/hop**. On every mood change it does that
+  mood's **signature move**; between steps it sprinkles smaller fidgets (tuned by
+  `PET_EMOTE_CHANCE`) so it always reads as a living creature. All built from the
+  existing abilities, so every gesture is reflex-protected.
+- **Voice** (`brain/pet/voice.py`) — it can **speak its lines aloud** via local
+  **Piper TTS** (`--voice`, or `PET_VOICE=1` + `PET_VOICE_MODEL=/path/voice.onnx`).
+  Fully local; entirely optional — no Piper/model/audio device → it just stays
+  text-only. With no LLM it still barks/whines short canned lines on mood changes.
 - **Episodic memory** (`brain/pet/memory.py`) — a local SQLite log of what it saw
   and felt; drives recognition and feeds the personality growth. First piece of
   the roadmap's learning stack.
 
 Honest limits: personality growth is persisted text/tallies, not learned weights;
-"where things are" stays loose (no metric map); narration is **text** — giving it
-an actual **voice** (Piper TTS) is the next stage and is what will really make it
-land. Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`, `PET_EVOLVE_EVERY`,
-`PET_HYSTERESIS_TICKS`, plus the shared LLM/costmap/reflex knobs. `wander` remains
-the plain reactive fallback and `brain/agent` the goal-driven agent; `pet` is
-built on both.
+"where things are" stays loose (no metric map). Config: `PET_NAME`, `PET_HOME`,
+`PET_REFLECT_S`, `PET_EVOLVE_EVERY`, `PET_HYSTERESIS_TICKS`, `PET_EMOTE`/
+`PET_EMOTE_CHANCE`, `PET_VOICE`/`PET_VOICE_MODEL`/`PET_VOICE_PLAYER`, plus the
+shared LLM/costmap/reflex knobs; flags `--voice`/`--no-voice`/`--no-emote`.
+`wander` remains the plain reactive fallback and `brain/agent` the goal-driven
+agent; `pet` is built on both.
 
 ### Custom gait (experimental, tune on hardware)
 
@@ -525,8 +534,9 @@ standing individually without stalling, `stand` via the server should be stable.
    robot's abilities as tools; free-roams + narrates, falls back to the reactive
    costmap when the LLM is unavailable. *Built — see
    [LLM brain: multimodal agent loop](#llm-brain-multimodal-agent-loop-brainagent).*
-4. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS
-   (turns the agent's narration into speech and adds spoken commands).
+4. **Voice I/O** — 🟡 *TTS output started* (`brain/pet/voice.py`: local Piper TTS
+   speaks the pet's lines). Still to do: wake word + VAD → whisper.cpp /
+   faster-whisper STT for spoken *commands*.
 5. **Learning stack** (all local, staged):
    - **Episodic memory** — 🟡 *started* (`brain/pet/memory.py`: on-device SQLite
      log the pet remembers from and grows its personality on). Next: richer

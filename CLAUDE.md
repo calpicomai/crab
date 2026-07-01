@@ -202,12 +202,19 @@ voice). Design rules to preserve:
 - **Memory is the learning-stack foothold** (`memory.py`, SQLite, roadmap 5a).
   Local, no cloud. Feeds recognition + the character growth.
 - **Mood** (`mood.py`) is event-driven and owned by the body thread (single
-  writer); the mind only nudges via `mood_hint`. **Gestures** (`expressions.py`)
-  are small reflex-protected moves; locomotor ones are left to costmap steering
-  so they don't fight navigation.
+  writer); the mind only nudges via `mood_hint`. A fresh observation counts as
+  novelty (`saw_new`) so a lively dog doesn't get bored between slow reflections.
+- **Dog-like emoting** (`expressions.py`): it must *emote*, not just walk — a
+  **signature** move on every mood change + smaller **idle** fidgets sprinkled in
+  (`PET_EMOTE_CHANCE`). Gestures (wag/spin/playbow/perk/sniff/cower/pounce/…) are
+  built from the existing abilities so all are reflex-protected; locomotor ones
+  are used as reactions, in-place ones as idle fidgets so they don't fight nav.
+- **Voice** (`voice.py`): local **Piper TTS**, threaded/non-blocking, fully
+  optional — missing piper/model/audio → text-only (same degrade pattern as the
+  camera/VLM). This is the output half of roadmap Voice I/O (spoken commands/STT
+  still later).
 - Reuses `costmap.py`, the reflex-protected `client`, and `brain/agent` LLM
-  backend/config. Works today with `--sim`/`--no-llm` (no GPU/model). Voice
-  (Piper TTS) is the next stage — narration is text for now.
+  backend/config. Works today with `--sim`/`--no-llm`/no-voice (no GPU/model/audio).
 
 ## Workflow: staged, STOP between stages
 

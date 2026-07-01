@@ -25,6 +25,7 @@ import argparse
 import base64
 import json
 import math
+import random
 import sys
 import threading
 import time
@@ -42,10 +43,19 @@ from .brain import build_pet_brain
 from .identity import PetIdentity
 from .memory import MemoryStore
 from .mood import Mood
+from .voice import Voice
 
-# Gestures the body performs inline (flavor); locomotor ones (approach/backaway)
-# are left to the costmap steering so a gesture never fights navigation.
-_INLINE_GESTURES = {"wiggle", "tilt", "rest"}
+# Short canned exclamations the body "says" on a mood change when there's no LLM
+# mind narrating — so a voice-enabled pet still barks/whines on its own.
+_BARKS = {
+    "excited": "woof woof! a friend!",
+    "playful": "let's play!",
+    "curious": "hm? what's that over there?",
+    "cautious": "ooh, careful now...",
+    "startled": "yipe!",
+    "bored": "*whine* ...anything happening?",
+    "sleepy": "*yawn*",
+}
 
 
 class _Shared:
@@ -77,8 +87,8 @@ def _grab_frame_b64(url: str) -> str | None:
 
 
 def _mind_thread(shared: _Shared, brain, identity: PetIdentity, memory: MemoryStore,
-                 frame_url: str, reflect_s: float, evolve_every: int) -> None:
-    """Slow loop: look, react in character, remember, and grow."""
+                 frame_url: str, reflect_s: float, evolve_every: int, voice: Voice) -> None:
+    """Slow loop: look, react in character, speak, remember, and grow."""
     reflections = 0
     while not shared.stop:
         with shared.lock:
@@ -95,6 +105,7 @@ def _mind_thread(shared: _Shared, brain, identity: PetIdentity, memory: MemorySt
                 shared.thought = thought
                 shared.thought_id += 1
             print(f"🐾 {thought.say}   [{mood_name}]")
+            voice.say(thought.say)
             if thought.observation:
                 identity.note_seen([thought.observation])
                 memory.remember(mood=mood_name, pose=status.get("pose"),
@@ -124,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sim", action="store_true", help="Canned inner voice (no LLM/GPU).")
     parser.add_argument("--no-llm", action="store_true", help="No mind at all — pure reactive + mood + memory.")
     parser.add_argument("--no-camera", action="store_true", help="Don't fuse the perception camera into the costmap.")
+    parser.add_argument("--no-emote", action="store_true", help="Disable dog-like expressive gestures.")
+    parser.add_argument("--voice", action="store_true", help="Speak aloud via Piper TTS (needs piper + a model).")
+    parser.add_argument("--no-voice", action="store_true", help="Force voice off.")
     parser.add_argument("--memory-db", default=pet_config.PET_MEMORY_DB, help="Episodic memory SQLite path.")
     parser.add_argument("--identity-file", default=pet_config.PET_IDENTITY_FILE, help="Identity JSON path.")
     parser.add_argument("--log", default=None, help="Append per-cycle experience records as JSONL.")
@@ -137,7 +151,14 @@ def main(argv: list[str] | None = None) -> int:
     costmap = LocalCostmap()
     mood = Mood()
     shared = _Shared()
+    rng = random.Random()
     use_camera = not args.no_camera
+    emote = pet_config.PET_EMOTE and not args.no_emote
+    voice = Voice(
+        enabled=(pet_config.PET_VOICE or args.voice) and not args.no_voice,
+        model=pet_config.PET_VOICE_MODEL,
+        player=pet_config.PET_VOICE_PLAYER,
+    )
     perc = httpx.Client(base_url=args.perception_url.rstrip("/")) if use_camera else None
     log_fh = open(args.log, "a") if args.log else None
     reflex_cm = pet_config.PET_REFLEX_CM
@@ -153,13 +174,15 @@ def main(argv: list[str] | None = None) -> int:
         brain = build_pet_brain(simulate)
         mind = threading.Thread(
             target=_mind_thread,
-            args=(shared, brain, identity, memory, frame_url, pet_config.PET_REFLECT_S, pet_config.PET_EVOLVE_EVERY),
+            args=(shared, brain, identity, memory, frame_url, pet_config.PET_REFLECT_S,
+                  pet_config.PET_EVOLVE_EVERY, voice),
             daemon=True,
         )
 
     commit_dir = 0.0
     commit_ttl = 0
     last_thought_id = 0
+    prev_mood = mood.current
     tick = 0
     started = time.monotonic()
     try:
@@ -196,13 +219,16 @@ def main(argv: list[str] | None = None) -> int:
             new_thought = thought is not None and tid != last_thought_id
             bias = thought.heading_bias_deg if thought else 0.0
             saw_person = bool(thought and "person" in (thought.observation or "").lower())
+            # A fresh in-character observation counts as novelty — keeps a lively
+            # dog engaged instead of getting bored between the slow reflections.
+            saw_new = bool(new_thought and thought and thought.observation)
             if new_thought:
                 mood.nudge(thought.mood_hint)
                 last_thought_id = tid
             target = max(-costmap.fov, min(costmap.fov, heading + bias))
 
             if forward_clear and abs(target) < turn_cap:
-                m = mood.update(moved_forward=True, saw_person=saw_person)
+                m = mood.update(moved_forward=True, saw_person=saw_person, saw_new=saw_new)
                 resp = client.walk(1, speed=mood.params().speed, min_clearance_cm=reflex_cm)
                 reflex = bool(resp.status and resp.status.reflex_stopped)
                 if reflex:
@@ -222,23 +248,43 @@ def main(argv: list[str] | None = None) -> int:
                     commit_dir = direction
                     commit_ttl = pet_config.PET_HYSTERESIS_TICKS
                 turn = direction * min(turn_cap, max(15.0, abs(target) or turn_cap))
-                m = mood.update(blocked=True, saw_person=saw_person)
+                m = mood.update(blocked=True, saw_person=saw_person, saw_new=saw_new)
                 resp = client.turn(turn, speed=mood.params().speed)
                 costmap.apply_motion(turn_deg=turn)
                 commit_ttl -= 1
                 action = f"turn {turn:+.0f}"
 
-            # Occasional flavor gesture from the mind (non-locomotor only).
-            if new_thought and thought and thought.gesture in _INLINE_GESTURES:
-                expressions.express(thought.gesture, client, speed=mood.params().speed, reflex_cm=reflex_cm)
+            # Emote like a dog: a big signature move the instant the mood changes,
+            # a smaller fidget sprinkled in otherwise — so it's never just walking.
+            gesture = "none"
+            mood_changed = m != prev_mood
+            if emote:
+                if new_thought and thought and thought.gesture in expressions.GESTURES \
+                        and thought.gesture != "none":
+                    gesture = thought.gesture           # the mind asked for a specific move
+                elif mood_changed:
+                    gesture = expressions.signature(m, rng)   # react to the new feeling
+                elif forward_clear and rng.random() < pet_config.PET_EMOTE_CHANCE:
+                    idle = expressions.idle(m, rng)
+                    gesture = idle if expressions.is_inplace(idle) else "none"  # don't drift while idling
+                if gesture != "none":
+                    expressions.express(gesture, client, speed=mood.params().speed, reflex_cm=reflex_cm)
 
-            print(f"[{tick:>3}] {action:<12} mood={m:<9} "
+            # A little bark/whine on a mood change when no LLM mind is narrating.
+            if mood_changed and mind is None and m in _BARKS:
+                print(f"🐾 {identity.name}: {_BARKS[m]}   [{m}]")
+                voice.say(_BARKS[m])
+            prev_mood = m
+
+            emote_s = f" {gesture}" if gesture != "none" else ""
+            print(f"[{tick:>3}] {action:<12}{emote_s:<9} mood={m:<9} "
                   f"clear={'y' if forward_clear else 'n'} head={heading:+.0f} "
                   f"bias={bias:+.0f} -> pose={resp.status.pose.value if resp.status else '?'}")
             if log_fh:
                 log_fh.write(json.dumps({
-                    "tick": tick, "action": action, "mood": m, "distance_cm": dist,
-                    "heading": heading, "bias": bias, "forward_clear": forward_clear,
+                    "tick": tick, "action": action, "gesture": gesture, "mood": m,
+                    "distance_cm": dist, "heading": heading, "bias": bias,
+                    "forward_clear": forward_clear,
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()
