@@ -371,6 +371,55 @@ Tunables: `LLM_BASE_URL`, `LLM_MODEL`, `LLM_MULTIMODAL`, `AGENT_TICK_S`,
 emits an **experience record** (frame ref + status + goal + narration + action +
 response) — with `--log`, as JSONL. Runs end-to-end in simulate (`--sim`).
 
+### Pet mode: a robot pet that grows its own personality (`brain/pet/`)
+
+The "living creature" mode. You **name it once and it grows its own personality
+from experience** — it roams, has **moods**, **remembers** what it sees, reacts
+with little **gestures**, and over runs becomes a distinct individual.
+
+```bash
+brain/.venv/bin/python -m brain.pet --name Nibbles     # meet your pet
+brain/.venv/bin/python -m brain.pet --sim --duration 60  # off-GPU, canned inner voice
+brain/.venv/bin/python -m brain.pet --no-llm            # pure reactive + mood + memory
+```
+
+Two layers run at their own pace so it's **always moving yet smart**:
+
+- **Body** (fast, always on) — a continuous reactive control loop (`brain/costmap.py`
+  + the Pi reflex) with **steering hysteresis**, so it moves smoothly and **no
+  longer stops and pans side to side**. It's the only thing that commands motion,
+  so the pet physically can't ram anything.
+- **Mind** (slow, background, optional) — every few seconds it looks through the
+  camera and reacts *in character* (its evolving personality + current mood +
+  recalled memories), nudging the body's heading and firing a gesture. With a
+  local VLM (llama-server) up, that's its real inner voice; without one it uses a
+  canned voice, so **it still feels alive today** on mood + memory alone.
+
+What makes it a pet:
+
+- **Personality that develops + persists** (`brain/pet/identity.py`) — a name +
+  a random temperament seed, then a **character summary re-condensed from its
+  memories** every so often and saved to `PET_HOME` (default `~/.picrawler_pet`).
+  Same pet across runs, becoming more itself. (Prompt/summary growth that
+  persists — not model fine-tuning; that's a far-later stage.)
+- **Moods** (`brain/pet/mood.py`) — curious / excited / playful / cautious /
+  startled / bored / sleepy, shifting from what happens (sees a person → excited;
+  a close call → startled; nothing for a while → bored → rests). Mood colors both
+  its words and its pace.
+- **Expressive gestures** (`brain/pet/expressions.py`) — a happy wiggle, a curious
+  head-tilt, resting when sleepy — all small, reflex-protected moves.
+- **Episodic memory** (`brain/pet/memory.py`) — a local SQLite log of what it saw
+  and felt; drives recognition and feeds the personality growth. First piece of
+  the roadmap's learning stack.
+
+Honest limits: personality growth is persisted text/tallies, not learned weights;
+"where things are" stays loose (no metric map); narration is **text** — giving it
+an actual **voice** (Piper TTS) is the next stage and is what will really make it
+land. Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`, `PET_EVOLVE_EVERY`,
+`PET_HYSTERESIS_TICKS`, plus the shared LLM/costmap/reflex knobs. `wander` remains
+the plain reactive fallback and `brain/agent` the goal-driven agent; `pet` is
+built on both.
+
 ### Custom gait (experimental, tune on hardware)
 
 `walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
@@ -479,8 +528,9 @@ standing individually without stalling, `stand` via the server should be stable.
 4. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS
    (turns the agent's narration into speech and adds spoken commands).
 5. **Learning stack** (all local, staged):
-   - **Episodic memory** — SQLite / vector store of interactions, people,
-     places, commands, and user corrections the LLM retrieves from (foundation).
+   - **Episodic memory** — 🟡 *started* (`brain/pet/memory.py`: on-device SQLite
+     log the pet remembers from and grows its personality on). Next: richer
+     recall (vector store) of people, places, and corrections.
    - **Skill library** — learned, named action sequences the LLM reuses.
    - **Outcome self-tuning** — adjust gait/action params from success/failure
      feedback (needs sensor signal).

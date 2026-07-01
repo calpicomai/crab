@@ -185,6 +185,30 @@ tools** (`walk`/`turn`/`stand`/`sit`/`get_status`; `test_leg` is excluded). It
 - Same **experience-record** seam (`--log` JSONL) as wander. `brain/agent/`:
   `config.py`, `tools.py`, `llm.py` (real + mock brain), `loop.py`.
 
+## Pet mode (`brain/pet/`) — the "living creature"
+
+The pet is the capstone autonomous mode: **you name it once and it grows its own
+personality from experience.** Two threads: a fast **body** (continuous reactive
+costmap+reflex control loop with steering **hysteresis** — the fix for the
+stop-and-pan; it is the ONLY thing that commands motion) and a slow **mind** (an
+in-character (V)LM every few seconds that nudges heading + gesture, else a canned
+voice). Design rules to preserve:
+
+- **Personality is persisted + emergent, not hardcoded.** `identity.py` stores a
+  name + random temperament seed + a `character` self-summary that the brain
+  **re-condenses from memory** every `PET_EVOLVE_EVERY` reflections and saves to
+  `PET_HOME`. Same pet across runs. This is prompt/summary+tally growth, NOT
+  weight fine-tuning (a far-later stage) — don't overstate it.
+- **Memory is the learning-stack foothold** (`memory.py`, SQLite, roadmap 5a).
+  Local, no cloud. Feeds recognition + the character growth.
+- **Mood** (`mood.py`) is event-driven and owned by the body thread (single
+  writer); the mind only nudges via `mood_hint`. **Gestures** (`expressions.py`)
+  are small reflex-protected moves; locomotor ones are left to costmap steering
+  so they don't fight navigation.
+- Reuses `costmap.py`, the reflex-protected `client`, and `brain/agent` LLM
+  backend/config. Works today with `--sim`/`--no-llm` (no GPU/model). Voice
+  (Piper TTS) is the next stage — narration is text for now.
+
 ## Workflow: staged, STOP between stages
 
 Do NOT build the whole system at once. Each stage must be independently
@@ -198,10 +222,13 @@ runnable, and you STOP after each so the user can test on real hardware.
   (`brain/costmap.py`, fusing ultrasonic + camera); **continuous avoidance**
   (fast Pi-side reflex between gait cycles + costmap; `GaitEngine.clearance_fn`);
   **multimodal LLM agent loop** (`brain/agent/`: a VLM sees the camera + calls
-  robot abilities as tools, free-roam + narrate, reactive fallback).
-- **Not built yet (roadmap in README):** voice I/O, the learning stack (episodic memory →
-  skill library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM,
-  and the real custom gait.
+  robot abilities as tools, free-roam + narrate, reactive fallback);
+  **pet mode** (`brain/pet/`: continuous reactive body + in-character mind, moods,
+  gestures, persistent+evolving personality, episodic memory — the learning
+  stack's first foothold).
+- **Not built yet (roadmap in README):** voice I/O (next), the rest of the
+  learning stack (richer memory → skill library → outcome self-tuning → offline
+  fine-tune), spatial mapping/SLAM, and the real custom gait.
 
 ## Ask before assuming
 
