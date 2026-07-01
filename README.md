@@ -197,6 +197,15 @@ are the wrong builds (torch: no CUDA). NanoOWL stays manual (`torch2trt` + a bui
 TensorRT engine); see `brain/requirements-perception.txt`. The base subset alone
 runs the server + simulate path anywhere.
 
+**JetPack 6.2 torch prerequisites** (the script handles the second automatically):
+- System CUDA must be installed — `sudo apt-get install -y nvidia-jetpack` —
+  else `import torch` fails with `libcudart.so.12: cannot open shared object file`.
+- torch ≥ 2.8 links **cuDSS**, which JetPack 6.2 doesn't ship
+  (`libcudss.so.0: cannot open shared object file`). `setup_perception.sh` detects
+  this and installs `nvidia-cudss-cu12 --no-deps` (no-deps so it doesn't shadow
+  the system CUDA 12.6). If ever needed by hand:
+  `brain/.venv/bin/pip install --no-deps nvidia-cudss-cu12`.
+
 Run the perception server (port 8100) and query it. It reads the camera from the
 robot at `brain/config.py`'s `BASE_URL` + `/camera/stream` (override with
 `PERCEPTION_CAMERA_URL`):

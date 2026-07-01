@@ -37,17 +37,40 @@ if [ -n "$TORCH_INDEX_URL" ] && ! "$PY" -c "import torch" 2>/dev/null; then
     echo "Installing torch/torchvision from $TORCH_INDEX_URL ..."
     "$PIP" install --index-url "$TORCH_INDEX_URL" torch torchvision
 fi
-if "$PY" -c "import torch" 2>/dev/null; then
-    "$PY" -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+
+# import_err: print nothing + succeed if torch imports; else emit the traceback.
+torch_import() { "$PY" -c "import torch" 2>&1; }
+
+# The jetson-ai-lab torch wheels (>=2.8) link cuDSS, which JetPack 6.2 doesn't
+# ship -> "libcudss.so.0: cannot open shared object file". Provide it via the pip
+# wheel WITHOUT deps, so it doesn't pull CUDA 12.9 libs that would shadow the
+# system CUDA 12.6 (nvidia-cublas/cuda-runtime/cusparse/nvjitlink-cu12).
+if ! "$PY" -c "import torch" 2>/dev/null; then
+    err="$(torch_import || true)"
+    if printf '%s' "$err" | grep -q "libcudss"; then
+        echo "torch needs cuDSS (libcudss.so.0); installing nvidia-cudss-cu12 (--no-deps) ..."
+        "$PIP" install --no-deps nvidia-cudss-cu12
+    fi
+fi
+
+# Final check — surface the REAL error instead of masking it.
+if "$PY" -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"; then
+    :
 else
+    echo "----------------------------------------------------------------------"
+    echo "torch is installed but failed to import. Full error:"
+    torch_import || true
     cat <<'MSG'
-torch is NOT installed. Install the NVIDIA Jetson PyTorch wheel that matches your
-JetPack/L4T version (do NOT `pip install torch` — the PyPI wheel has no CUDA).
-See NVIDIA's "Installing PyTorch for Jetson", or pass the jetson-ai-lab index:
-    TORCH_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 bash brain/setup_perception.sh
-Skipping ultralytics until torch is present (so pip can't pull a CPU torch).
+----------------------------------------------------------------------
+Common JetPack 6.2 causes:
+  * libcudart.so.12 / libcublasLt.so missing -> system CUDA not installed:
+        sudo apt-get install -y nvidia-jetpack
+  * libcudss.so.0 missing (torch >= 2.8) -> this script installs it, but if the
+    wheel was unavailable: brain/.venv/bin/pip install --no-deps nvidia-cudss-cu12
+If torch was never installed, pass the jetson-ai-lab index (JetPack 6.2 = cu126):
+    TORCH_INDEX_URL=https://pypi.jetson-ai-lab.io/jp6/cu126 bash brain/setup_perception.sh
 MSG
-    exit 0
+    exit 1
 fi
 
 # 3) Ultralytics (YOLO). torch is present now, so pip won't reinstall it.
