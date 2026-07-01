@@ -42,6 +42,18 @@ ULTRASONIC_ENABLED: bool = os.environ.get("PICRAWLER_ULTRASONIC_ENABLED", "1").s
 ULTRASONIC_TRIG: str = os.environ.get("PICRAWLER_ULTRASONIC_TRIG", "D2")
 ULTRASONIC_ECHO: str = os.environ.get("PICRAWLER_ULTRASONIC_ECHO", "D3")
 
+# Walk gait selection + custom-trot tuning (see robot/gait.py). "canned" uses
+# picrawler's built-in do_action('forward') — the proven default. "trot" uses the
+# custom coordinate-based diagonal-trot gait (do_step) — smoother/faster, but tune
+# it on the robot first (elevated) via robot/gait_tune.py, then flip the default.
+GAIT_MODE: str = os.environ.get("PICRAWLER_GAIT_MODE", "canned").strip().lower()
+# Trot coordinates (picrawler frame: x forward+, z height, foot down ~ -50). x
+# stays in [~40,80]; keep the swing within range. All tunable.
+GAIT_X_NEUTRAL: int = int(os.environ.get("PICRAWLER_GAIT_X_NEUTRAL", "50"))  # mid foot reach
+GAIT_STRIDE: int = int(os.environ.get("PICRAWLER_GAIT_STRIDE", "20"))        # fwd/back travel
+GAIT_LIFT_Z: int = int(os.environ.get("PICRAWLER_GAIT_LIFT_Z", "-35"))       # foot up (swing)
+GAIT_DOWN_Z: int = int(os.environ.get("PICRAWLER_GAIT_DOWN_Z", "-50"))       # foot down (stance)
+
 # Pose to gently home into when the server starts, instead of leaving the legs
 # in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses
 # the same staged, low-speed motion as the stand/sit commands. "stand" only

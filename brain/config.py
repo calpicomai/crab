@@ -24,10 +24,10 @@ REQUEST_TIMEOUT_S: float = float(os.environ.get("ROBOT_TIMEOUT_S", "15"))
 # Turn away when forward clearance drops below WANDER_MIN_CM; otherwise step.
 WANDER_MIN_CM: float = float(os.environ.get("WANDER_MIN_CM", "20"))
 WANDER_TURN_DEG: float = float(os.environ.get("WANDER_TURN_DEG", "30"))
-# Gait speed for wander's walk/turn (picrawler ~1-100; higher = faster). A modest
-# bump from the protocol default of 50; raise toward your hardware's stable max
-# (sweep with a direct /walk call and watch for brownout).
-WANDER_SPEED: int = int(os.environ.get("WANDER_SPEED", "60"))
+# Gait speed for wander's walk/turn (picrawler ~1-100; higher = faster). Set to
+# 100 after a hardware sweep confirmed it's stable on this robot; lower it if you
+# see any brownout on a marginal battery.
+WANDER_SPEED: int = int(os.environ.get("WANDER_SPEED", "100"))
 # Steps to walk per "clear" decision — walking several in one command flows
 # better than the one-step-then-stop stutter (ultrasonic is re-checked each cycle).
 WANDER_STEPS: int = int(os.environ.get("WANDER_STEPS", "2"))

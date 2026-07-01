@@ -269,6 +269,30 @@ Each step emits an **experience record** (distance + decision + response) — wi
 sits the robot. Runs end-to-end in simulate (`PICRAWLER_SIMULATE=1` on the Pi
 reports a synthetic clearance).
 
+### Custom trot gait (experimental, tune on hardware)
+
+`walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
+
+- **`canned`** (default) — picrawler's built-in `do_action('forward')`. Proven; used
+  by everything today.
+- **`trot`** — a custom coordinate gait (`crawler.do_step`) where the diagonal leg
+  pairs (FL+RR / FR+RL) alternate for a smoother, faster stride. **Tune it on the
+  robot before making it the default** — feel depends on stride/lift/reach, which
+  can't be judged off-hardware.
+
+Tune it (Pi-local, robot **elevated**, start slow):
+
+```bash
+robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 40
+PICRAWLER_GAIT_STRIDE=24 PICRAWLER_GAIT_LIFT_Z=-30 \
+  robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 60
+```
+
+Knobs: `PICRAWLER_GAIT_X_NEUTRAL` / `PICRAWLER_GAIT_STRIDE` / `PICRAWLER_GAIT_LIFT_Z`
+/ `PICRAWLER_GAIT_DOWN_Z`. Once it looks smooth and stable, run the server with
+`PICRAWLER_GAIT_MODE=trot` and `walk` (and wander) use it — no protocol/client
+change. `turn` stays canned for now.
+
 ### Off-hardware dev
 
 Both nodes run on a laptop with no SunFounder hardware: the `GaitEngine`

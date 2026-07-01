@@ -45,15 +45,21 @@ brain. Two physical nodes on the same LAN:
 ## Gait seam (important)
 
 `robot/gait.py` exposes `GaitEngine` with fixed method signatures
-(`stand`/`sit`/`walk`/`turn`/`test_leg`/`get_status`). `walk`/`turn` are backed by
-picrawler's canned `do_action` (marked `# TODO: real custom gait`). `stand`/`sit`
-are **staged**: one leg at a time via `do_single_leg` to picrawler's stand/sit
+(`stand`/`sit`/`walk`/`turn`/`test_leg`/`get_status`). `stand`/`sit` are
+**staged**: one leg at a time via `do_single_leg` to picrawler's stand/sit
 coordinates, at `config.STAND_SPEED` with `config.LEG_SETTLE_S` between legs — a
-power-safety measure (all-12-at-once browns out the shared Robot HAT rail). This
-per-leg staging is the first step toward the custom coordinate-based gait, which
-will replace the remaining `do_action` bodies (`→ crawler.do_step(coords, speed)`)
-**without changing the signatures, the HTTP protocol, or the client.** Default
-gait speed is **50** (picrawler's own default; gentler on current).
+power-safety measure (all-12-at-once browns out the shared Robot HAT rail).
+
+`walk` dispatches on `config.GAIT_MODE`:
+- **`canned`** (default, proven): picrawler's built-in `do_action('forward')`.
+- **`trot`**: the custom coordinate gait — `_trot_walk` builds a 4-frame diagonal
+  trot (pairs FL+RR / FR+RL alternate) via `crawler.do_step(coords, speed)`,
+  modulating only x (stride) and z (lift) around the stand pose and keeping each
+  leg's neutral `LEG_Y` (x/z semantics are unambiguous: x forward+, z up+). Tune
+  it on hardware with `robot/gait_tune.py` (Pi-local, elevated) and the
+  `PICRAWLER_GAIT_*` env knobs; flip the default to `trot` once dialed in. `turn`
+  is still canned. `walk(steps, speed, mode=...)` takes an optional mode override
+  but the HTTP protocol/`WalkCommand` are unchanged — mode is server-side config.
 
 ## Movement safety
 
