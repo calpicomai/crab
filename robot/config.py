@@ -41,18 +41,21 @@ ULTRASONIC_ENABLED: bool = os.environ.get("PICRAWLER_ULTRASONIC_ENABLED", "1").s
 }
 ULTRASONIC_TRIG: str = os.environ.get("PICRAWLER_ULTRASONIC_TRIG", "D2")
 ULTRASONIC_ECHO: str = os.environ.get("PICRAWLER_ULTRASONIC_ECHO", "D3")
+# Ping attempts per read. robot_hat retries up to this many times for a valid
+# echo; fewer = lower worst-case latency (returns "no echo" sooner) at the cost of
+# a few more spurious misses. Kept low so the wander loop reacts quickly.
+ULTRASONIC_PINGS: int = int(os.environ.get("PICRAWLER_ULTRASONIC_PINGS", "2"))
 
-# Walk gait selection + custom-trot tuning (see robot/gait.py). "canned" uses
-# picrawler's built-in do_action('forward') — the proven default. "trot" uses the
-# custom coordinate-based diagonal-trot gait (do_step) — smoother/faster, but tune
-# it on the robot first (elevated) via robot/gait_tune.py, then flip the default.
+# Walk gait selection (see robot/gait.py). "canned" uses picrawler's built-in
+# do_action('forward') — the proven default. "custom" plays picrawler's real
+# forward keyframes via do_step with a tunable stride scale — same motion at
+# scale 1.0, longer step above. Tune on the robot (elevated) via robot/gait_tune.py,
+# then flip the default.
 GAIT_MODE: str = os.environ.get("PICRAWLER_GAIT_MODE", "canned").strip().lower()
-# Trot coordinates (picrawler frame: x forward+, z height, foot down ~ -50). x
-# stays in [~40,80]; keep the swing within range. All tunable.
-GAIT_X_NEUTRAL: int = int(os.environ.get("PICRAWLER_GAIT_X_NEUTRAL", "50"))  # mid foot reach
-GAIT_STRIDE: int = int(os.environ.get("PICRAWLER_GAIT_STRIDE", "20"))        # fwd/back travel
-GAIT_LIFT_Z: int = int(os.environ.get("PICRAWLER_GAIT_LIFT_Z", "-35"))       # foot up (swing)
-GAIT_DOWN_Z: int = int(os.environ.get("PICRAWLER_GAIT_DOWN_Z", "-50"))       # foot down (stance)
+# Stride length multiplier for the custom gait: 1.0 = picrawler's exact step
+# (known to walk); >1.0 reaches/sweeps further per step (longer stride). Push it
+# up on hardware until the step is as long as stays stable.
+GAIT_STRIDE_SCALE: float = float(os.environ.get("PICRAWLER_GAIT_STRIDE_SCALE", "1.0"))
 
 # Pose to gently home into when the server starts, instead of leaving the legs
 # in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses

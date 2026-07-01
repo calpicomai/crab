@@ -240,57 +240,64 @@ record.
 ### Autonomy: wander + avoid (`brain/wander.py`)
 
 The first autonomous behavior — the robot moves on its own and steers around
-obstacles, no LLM. A reactive loop on the Jetson reads the **forward ultrasonic
-clearance** (from `get_status().distance_cm`, sensed on the Pi via `robot_hat`,
-default pins trig=`D2`/echo=`D3`) and:
+obstacles, no LLM. A reactive loop on the Jetson fuses **two** obstacle senses:
 
-- clearance below `WANDER_MIN_CM` (default 20cm) → **turn away** (rotates the
-  same direction until clear; alternates side per obstacle),
-- otherwise → **step forward**.
+- **ultrasonic** — forward clearance (`get_status().distance_cm`, sensed on the
+  Pi via `robot_hat`, pins trig=`D2`/echo=`D3`). Fast, but a narrow beam misses
+  thin / off-axis things (e.g. a pole).
+- **camera** — the perception server's `/snapshot`; a detection that's large
+  (close) and roughly ahead counts as an obstacle and the robot turns away from
+  its side. Catches what the ultrasonic misses. Unreachable → logs once and
+  continues ultrasonic-only. (For arbitrary obstacles like a pole, run perception
+  with NanoOWL + obstacle prompts — YOLO only flags its COCO classes.)
 
-It's the reactive/behavior-tree fallback from the roadmap and the
+Each cycle: if either sense is blocked → **turn away**; else → **step forward**.
+Reaction latency is kept low — it re-checks the senses **every stride**
+(`WANDER_STEPS=1`), the ultrasonic read uses few ping retries
+(`PICRAWLER_ULTRASONIC_PINGS`), and the camera path reads the perception server's
+latest frame. It's the reactive/behavior-tree fallback from the roadmap and the
 `read sensors → decide → act` seam the Ollama agent loop plugs into next.
 
 ```bash
-# on the Jetson (elevate the robot / clear the area for the first run):
+# on the Jetson (perception server running for camera avoidance; robot elevated first):
 ROBOT_HOST=10.1.50.13 brain/.venv/bin/python -m brain.wander
-brain/.venv/bin/python -m brain.wander --speed 75 --steps 3 --min-cm 25 --turn-deg 45
-brain/.venv/bin/python -m brain.wander --log run.jsonl   # append experience records
+brain/.venv/bin/python -m brain.wander --no-camera           # ultrasonic only
+brain/.venv/bin/python -m brain.wander --min-cm 40 --turn-deg 45 --log run.jsonl
 ```
 
-Tunables (env or matching flags): `WANDER_MIN_CM`, `WANDER_TURN_DEG`,
-`WANDER_SPEED` (gait speed, default 60 — raise toward your stable max), `WANDER_STEPS`
-(steps walked per clear decision, default 2 — more = smoother, less stop-start),
-`WANDER_STEP_DELAY_S`. To find a good speed, sweep a direct call and watch for
-brownout: `curl -XPOST http://<pi>:8000/walk -d '{"steps":4,"speed":80}' -H 'content-type: application/json'`. Ultrasonic pins are env-overridable on the Pi
-(`PICRAWLER_ULTRASONIC_TRIG` / `_ECHO`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`).
-Each step emits an **experience record** (distance + decision + response) — with
-`--log`, as JSONL — the seam the future learning stack consumes. Ctrl+C stops and
-sits the robot. Runs end-to-end in simulate (`PICRAWLER_SIMULATE=1` on the Pi
-reports a synthetic clearance).
+Tunables (env or flags): `WANDER_MIN_CM` (stop distance, default 35),
+`WANDER_TURN_DEG`, `WANDER_SPEED` (gait speed, default 100), `WANDER_STEPS`
+(default 1 = re-check every stride), `WANDER_STEP_DELAY_S`; camera:
+`PERCEPTION_BASE_URL`, `WANDER_USE_CAMERA`, `WANDER_OBSTACLE_AREA` (fraction of
+frame = "close"), `WANDER_CENTER_BAND` (how central = "in the way"). Ultrasonic
+pins/pings are env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/
+`_PINGS`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`). Each step emits an
+**experience record** (senses + decision + response) — with `--log`, as JSONL.
+Ctrl+C stops and sits. Runs end-to-end in simulate.
 
-### Custom trot gait (experimental, tune on hardware)
+### Custom gait (experimental, tune on hardware)
 
 `walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
 
 - **`canned`** (default) — picrawler's built-in `do_action('forward')`. Proven; used
   by everything today.
-- **`trot`** — a custom coordinate gait (`crawler.do_step`) where the diagonal leg
-  pairs (FL+RR / FR+RL) alternate for a smoother, faster stride. **Tune it on the
-  robot before making it the default** — feel depends on stride/lift/reach, which
-  can't be judged off-hardware.
+- **`custom`** — plays picrawler's **real forward keyframes** via `crawler.do_step`
+  with a tunable **stride scale**. At scale 1.0 it's the stock step (it truly walks);
+  raise the scale for a longer stride. (A first attempt that modulated a global +x
+  axis just "danced" in place — forward motion on this robot is a per-leg y-sweep,
+  so the custom gait is built *from* the proven frames rather than invented.)
 
 Tune it (Pi-local, robot **elevated**, start slow):
 
 ```bash
-robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 40
-PICRAWLER_GAIT_STRIDE=24 PICRAWLER_GAIT_LIFT_Z=-30 \
-  robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 60
+robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 40           # scale 1.0 = stock step
+PICRAWLER_GAIT_STRIDE_SCALE=1.4 robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 60
 ```
 
-Knobs: `PICRAWLER_GAIT_X_NEUTRAL` / `PICRAWLER_GAIT_STRIDE` / `PICRAWLER_GAIT_LIFT_Z`
-/ `PICRAWLER_GAIT_DOWN_Z`. Once it looks smooth and stable, run the server with
-`PICRAWLER_GAIT_MODE=trot` and `walk` (and wander) use it — no protocol/client
+Then set it on the floor and confirm it moves forward. Knob:
+`PICRAWLER_GAIT_STRIDE_SCALE` (stride length; push up until it's the longest step
+that stays stable). Once dialed, run the server with `PICRAWLER_GAIT_MODE=custom`
+(+ your `PICRAWLER_GAIT_STRIDE_SCALE`) and `walk`/wander use it — no protocol/client
 change. `turn` stays canned for now.
 
 ### Off-hardware dev
