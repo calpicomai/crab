@@ -30,6 +30,18 @@ SIMULATE: bool = os.environ.get("PICRAWLER_SIMULATE", "").strip().lower() in {
 STAND_SPEED: int = int(os.environ.get("PICRAWLER_STAND_SPEED", "40"))
 LEG_SETTLE_S: float = float(os.environ.get("PICRAWLER_LEG_SETTLE_S", "0.2"))
 
+# Ultrasonic distance sensor (robot_hat), used by the brain's wander/avoid loop.
+# Default pins are the SunFounder PiCrawler wiring (trig=D2, echo=D3). Disable
+# with PICRAWLER_ULTRASONIC_ENABLED=0. Missing robot_hat -> DistanceSensor simulates.
+ULTRASONIC_ENABLED: bool = os.environ.get("PICRAWLER_ULTRASONIC_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+ULTRASONIC_TRIG: str = os.environ.get("PICRAWLER_ULTRASONIC_TRIG", "D2")
+ULTRASONIC_ECHO: str = os.environ.get("PICRAWLER_ULTRASONIC_ECHO", "D3")
+
 # Pose to gently home into when the server starts, instead of leaving the legs
 # in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses
 # the same staged, low-speed motion as the stand/sit commands. "stand" only

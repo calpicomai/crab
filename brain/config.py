@@ -19,3 +19,9 @@ BASE_URL: str = os.environ.get("ROBOT_BASE_URL", f"http://{ROBOT_HOST}:{ROBOT_PO
 # Per-request timeout in seconds. Gait actions can take a few seconds, so this
 # is generous; tighten once real gait durations are known.
 REQUEST_TIMEOUT_S: float = float(os.environ.get("ROBOT_TIMEOUT_S", "15"))
+
+# --- Wander / avoid loop (brain/wander.py) ------------------------------------
+# Turn away when forward clearance drops below WANDER_MIN_CM; otherwise step.
+WANDER_MIN_CM: float = float(os.environ.get("WANDER_MIN_CM", "20"))
+WANDER_TURN_DEG: float = float(os.environ.get("WANDER_TURN_DEG", "30"))
+WANDER_STEP_DELAY_S: float = float(os.environ.get("WANDER_STEP_DELAY_S", "0.5"))

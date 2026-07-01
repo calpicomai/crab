@@ -131,6 +131,9 @@ class RobotStatus(BaseModel):
     servo_count: int = 12
     simulate: bool = False
     uptime_s: float | None = None
+    # Forward ultrasonic clearance in cm (None = no sensor / no echo). The brain's
+    # wander/avoid loop reads this from get_status to decide when to turn away.
+    distance_cm: float | None = None
 
 
 class CommandResponse(BaseModel):

@@ -36,6 +36,7 @@ from shared import (
 from . import config
 from .camera import PiCamera
 from .gait import GaitEngine
+from .sensors import DistanceSensor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("picrawler.server")
@@ -55,6 +56,25 @@ camera = (
     if config.CAMERA_ENABLED
     else None
 )
+
+# Ultrasonic distance sensor (optional) — read into the status response.
+distance_sensor = (
+    DistanceSensor(
+        trig=config.ULTRASONIC_TRIG,
+        echo=config.ULTRASONIC_ECHO,
+        simulate=config.SIMULATE,
+    )
+    if config.ULTRASONIC_ENABLED
+    else None
+)
+
+
+def _status_with_distance():
+    """Engine status augmented with the current ultrasonic clearance."""
+    status = engine.get_status()
+    if distance_sensor is not None:
+        status.distance_cm = distance_sensor.read_cm()
+    return status
 
 
 def _home_on_start() -> None:
@@ -158,7 +178,7 @@ def sit(_cmd: SitCommand) -> CommandResponse:
 
 @app.post(ACTION_PATHS[Action.GET_STATUS], response_model=CommandResponse)
 def get_status(_cmd: GetStatusCommand) -> CommandResponse:
-    return CommandResponse(ok=True, action=Action.GET_STATUS, detail="status", status=engine.get_status())
+    return CommandResponse(ok=True, action=Action.GET_STATUS, detail="status", status=_status_with_distance())
 
 
 @app.post(ACTION_PATHS[Action.TEST_LEG], response_model=CommandResponse)
