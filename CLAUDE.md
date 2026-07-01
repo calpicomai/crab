@@ -83,20 +83,32 @@ auto-enables `simulate`: it logs the intended action and returns success, so the
 whole robot↔brain link runs off-hardware. Force it anywhere with
 `PICRAWLER_SIMULATE=1`. `RobotStatus.simulate` reports which mode is active.
 
-## Perception (`brain/perception/`)
+## Perception (camera on the Pi, detection on the Jetson)
 
-The Jetson's eyes. `PerceptionEngine` owns a `CsiCamera` (GStreamer
-`nvarguscamerasrc`, synthetic-frame fallback) and a registry of loadable
-detector **backends** behind a common `DetectorBackend` ABC: `yolo` (fixed COCO),
-`nanoowl` (open-vocabulary, prompt-steered), and `dummy` (off-hardware/CI).
-Backends lazily import their heavy libs in `load()` and free them in `unload()`
-so a detector's RAM can be reclaimed for the LLM/Whisper/Piper. `detect()` fuses
-every loaded backend's output into a `PerceptionSnapshot`. Served over HTTP
-(`perception/server.py`, port 8100) and usable in-process. Simulate (synthetic
-frames + dummy) via `PERCEPTION_SIMULATE=1` or auto when cv2/camera/models are
-missing — mirrors the GaitEngine fallback. `PerceptionSnapshot` lives in
-`brain/perception/types.py` (brain-internal, **not** `shared/`) and is the
-perception half of the experience-record seam.
+The **camera is on the robot (Pi)** — the Pi 4B can't run the detectors, so it
+captures and streams; the Jetson pulls the stream and detects.
+
+- **Pi** (`robot/camera.py` + `robot/server.py`): `PiCamera` captures via
+  picamera2 and the server exposes `CAMERA_STREAM_PATH` (MJPEG,
+  multipart/x-mixed-replace) + `CAMERA_FRAME_PATH` (single JPEG). No picamera2
+  (dev/CI) → synthetic JPEG frames, so the video link runs off-hardware.
+- **Jetson** (`brain/perception/`): `PerceptionEngine` owns an `MjpegCamera` that
+  reads the Pi's stream (default `brain/config.BASE_URL + CAMERA_STREAM_PATH`,
+  override `PERCEPTION_CAMERA_URL`), decoding JPEG→numpy with Pillow — **no
+  OpenCV/GStreamer needed on the Jetson**. A registry of loadable detector
+  **backends** behind a `DetectorBackend` ABC — `yolo` (fixed COCO), `nanoowl`
+  (open-vocab, prompt-steered), `dummy` (off-hardware/CI) — lazily import heavy
+  libs in `load()` and free them in `unload()` for the RAM budget. `detect()`
+  fuses every loaded backend into a `PerceptionSnapshot`. Served over HTTP
+  (`perception/server.py`, port 8100).
+
+`simulate` tracks the **camera/frame** state (synthetic or forced via
+`PERCEPTION_SIMULATE`/`PICRAWLER_SIMULATE`); the **detector** state is the
+separate `backends` list (dummy vs yolo/nanoowl) — a real camera with only the
+dummy detector reports `simulate:false, backends:["dummy"]`. `PerceptionSnapshot`
+lives in `brain/perception/types.py` (brain-internal, **not** `shared/`; only the
+camera path constants are shared) and is the perception half of the
+experience-record seam.
 
 ## Workflow: staged, STOP between stages
 

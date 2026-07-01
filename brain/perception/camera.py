@@ -1,92 +1,141 @@
-"""Camera capture — CSI camera via GStreamer, with an off-hardware fallback.
+"""Camera source for perception — pulls the robot's MJPEG stream over the LAN.
 
-On the Jetson, frames come from a CSI camera through an ``nvarguscamerasrc``
-GStreamer pipeline opened by OpenCV. If OpenCV / the camera are unavailable
-(dev laptop, CI) or ``simulate`` is forced, ``read()`` returns a deterministic
-synthetic frame so the whole perception pipeline runs off-hardware — mirroring
-the GaitEngine simulate philosophy on the robot side.
+The camera is on the **robot (Pi)**, which serves an MJPEG stream; this client
+runs on the Jetson, keeps the latest decoded frame in a background thread, and
+hands it to the PerceptionEngine on demand. Decouples capture rate (the Pi's
+stream) from detection rate (however often the engine asks).
 
-Frames are numpy arrays in BGR order (H, W, 3), matching OpenCV/ultralytics.
+If httpx/Pillow are missing or the stream can't be reached, it falls back to
+deterministic synthetic frames (like the robot side) so perception still runs
+off-hardware. Frames are numpy BGR (H, W, 3), matching ultralytics.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import numpy as np
 
 logger = logging.getLogger("perception.camera")
 
+# JPEG start-of-image / end-of-image markers, used to carve frames out of the
+# multipart MJPEG byte stream without parsing multipart headers.
+_SOI = b"\xff\xd8"
+_EOI = b"\xff\xd9"
 
-class CsiCamera:
-    """CSI camera capture with a synthetic-frame fallback."""
+
+class MjpegCamera:
+    """Reads the robot's MJPEG stream in a background thread; exposes latest frame."""
 
     def __init__(
         self,
-        sensor_id: int = 0,
-        width: int = 1280,
-        height: int = 720,
-        fps: int = 30,
-        flip: int = 0,
+        url: str,
+        width: int = 640,
+        height: int = 480,
         simulate: bool = False,
+        timeout: float = 5.0,
     ) -> None:
+        self.url = url
         self.width = width
         self.height = height
+        self.timeout = timeout
         self.simulate = bool(simulate)
-        self._cap = None
+        self._latest: np.ndarray | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
         self._synthetic_tick = 0
+        self._thread: threading.Thread | None = None
 
+        target = self._run_synthetic if self.simulate else self._run_stream
         if self.simulate:
-            logger.warning("CsiCamera in SIMULATE mode — synthetic frames only")
+            logger.warning("MjpegCamera in SIMULATE mode — synthetic frames only")
+        else:
+            logger.info("MjpegCamera reading %s", url)
+        self._thread = threading.Thread(target=target, daemon=True)
+        self._thread.start()
+
+    # ----------------------------------------------------------------- #
+    # Background readers
+    # ----------------------------------------------------------------- #
+    def _run_stream(self) -> None:
+        """Connect to the MJPEG stream and decode frames until stopped."""
+        try:
+            import httpx
+            from PIL import Image
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("httpx/Pillow unavailable (%s); using synthetic frames", exc)
+            self.simulate = True
+            self._run_synthetic()
             return
 
-        # Try to open the real CSI pipeline; any failure -> simulate.
-        try:
-            import cv2  # lazy: not present on dev laptops / CI
+        while not self._stop.is_set():
+            try:
+                with httpx.stream("GET", self.url, timeout=self.timeout) as resp:
+                    resp.raise_for_status()
+                    buf = b""
+                    for chunk in resp.iter_bytes():
+                        if self._stop.is_set():
+                            return
+                        buf += chunk
+                        buf = self._extract_frames(buf, Image)
+            except Exception as exc:  # noqa: BLE001 - reconnect/backoff on any error
+                if not self.simulate:
+                    logger.warning("MJPEG stream error (%s); retrying, synthetic meanwhile", exc)
+                    self.simulate = True  # report synthetic until frames flow
+                self._store(self._synthetic_frame())
+                if self._stop.wait(1.0):
+                    return
 
-            pipeline = self._gst_pipeline(sensor_id, width, height, fps, flip)
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            if not cap.isOpened():
-                raise RuntimeError("cv2.VideoCapture did not open the GStreamer pipeline")
-            self._cap = cap
-            logger.info("CSI camera opened (sensor %d, %dx%d@%d)", sensor_id, width, height, fps)
-        except Exception as exc:  # noqa: BLE001 - any failure -> synthetic frames
-            logger.warning("CSI camera unavailable (%s); falling back to synthetic frames", exc)
-            self.simulate = True
+    def _extract_frames(self, buf: bytes, Image) -> bytes:
+        """Pull complete JPEGs out of buf, decode the newest, return the remainder."""
+        while True:
+            start = buf.find(_SOI)
+            if start < 0:
+                return buf[-1:]  # keep a byte in case a marker straddles chunks
+            end = buf.find(_EOI, start + 2)
+            if end < 0:
+                return buf[start:]  # incomplete frame; wait for more bytes
+            jpeg = buf[start : end + 2]
+            buf = buf[end + 2 :]
+            try:
+                import io
 
-    @staticmethod
-    def _gst_pipeline(sensor_id: int, width: int, height: int, fps: int, flip: int) -> str:
-        return (
-            f"nvarguscamerasrc sensor-id={sensor_id} ! "
-            f"video/x-raw(memory:NVMM),width={width},height={height},framerate={fps}/1 ! "
-            f"nvvidconv flip-method={flip} ! "
-            f"video/x-raw,format=BGRx ! videoconvert ! "
-            f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
-        )
+                rgb = np.asarray(Image.open(io.BytesIO(jpeg)).convert("RGB"))
+                self._store(rgb[:, :, ::-1])  # RGB -> BGR
+                self.simulate = False
+            except Exception:  # noqa: BLE001 - skip a corrupt frame
+                continue
+
+    def _run_synthetic(self) -> None:
+        period = 1.0 / 15
+        while not self._stop.is_set():
+            self._store(self._synthetic_frame())
+            time.sleep(period)
 
     def _synthetic_frame(self) -> np.ndarray:
-        """Deterministic placeholder frame: a gradient with a moving block."""
         h, w = self.height, self.width
         frame = np.zeros((h, w, 3), dtype=np.uint8)
-        # Vertical gradient so the image isn't blank.
         frame[:, :, 1] = np.linspace(0, 255, h, dtype=np.uint8)[:, None]
-        # A block that shifts each call, so successive frames differ.
-        x0 = (self._synthetic_tick * 20) % max(1, w - w // 4)
-        frame[h // 4 : h * 3 // 4, x0 : x0 + w // 4, 2] = 200
+        x0 = (self._synthetic_tick * 16) % max(1, w - w // 4)
+        frame[h // 4 : h * 3 // 4, x0 : x0 + w // 4, 2] = 220
         self._synthetic_tick += 1
         return frame
 
+    # ----------------------------------------------------------------- #
+    # Frame access
+    # ----------------------------------------------------------------- #
+    def _store(self, frame: np.ndarray) -> None:
+        with self._lock:
+            self._latest = frame
+
     def read(self) -> np.ndarray:
-        """Return one BGR frame (H, W, 3). Never blocks indefinitely on hardware."""
-        if self.simulate or self._cap is None:
-            return self._synthetic_frame()
-        ok, frame = self._cap.read()
-        if not ok or frame is None:
-            logger.warning("camera read failed; returning a synthetic frame this cycle")
-            return self._synthetic_frame()
-        return frame
+        """Latest frame (BGR). Returns a synthetic frame until the first real one."""
+        with self._lock:
+            if self._latest is not None:
+                return self._latest
+        return self._synthetic_frame()
 
     def close(self) -> None:
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
+        self._stop.set()

@@ -16,13 +16,18 @@ SIMULATE: bool = os.environ.get("PERCEPTION_SIMULATE", "").strip().lower() in {
     "on",
 }
 
-# --- CSI camera (nvarguscamerasrc via GStreamer) ------------------------------
-CAMERA_SENSOR_ID: int = int(os.environ.get("PERCEPTION_CAMERA_SENSOR_ID", "0"))
-CAMERA_WIDTH: int = int(os.environ.get("PERCEPTION_CAMERA_WIDTH", "1280"))
-CAMERA_HEIGHT: int = int(os.environ.get("PERCEPTION_CAMERA_HEIGHT", "720"))
-CAMERA_FPS: int = int(os.environ.get("PERCEPTION_CAMERA_FPS", "30"))
-# nvvidconv flip-method: 0=none, 2=180°, etc. Set 2 if the camera is mounted upside down.
-CAMERA_FLIP: int = int(os.environ.get("PERCEPTION_CAMERA_FLIP", "0"))
+# --- Camera source (the camera is on the robot/Pi, streamed as MJPEG) ---------
+# Default to the robot's MJPEG endpoint, derived from brain/config.py so the Pi's
+# address isn't hardcoded twice. Override with PERCEPTION_CAMERA_URL.
+from .. import config as _robot_link  # brain/config.py: ROBOT_HOST/PORT/BASE_URL
+from shared import CAMERA_STREAM_PATH
+
+CAMERA_URL: str = os.environ.get(
+    "PERCEPTION_CAMERA_URL", f"{_robot_link.BASE_URL}{CAMERA_STREAM_PATH}"
+)
+# Size of the synthetic fallback frame (real frame size comes from the stream).
+CAMERA_WIDTH: int = int(os.environ.get("PERCEPTION_CAMERA_WIDTH", "640"))
+CAMERA_HEIGHT: int = int(os.environ.get("PERCEPTION_CAMERA_HEIGHT", "480"))
 
 
 def _split(value: str) -> list[str]:

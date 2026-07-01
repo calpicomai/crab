@@ -18,7 +18,7 @@ import time
 import numpy as np
 
 from . import backends, config
-from .camera import CsiCamera
+from .camera import MjpegCamera
 from .types import PerceptionSnapshot
 
 logger = logging.getLogger("perception.engine")
@@ -31,16 +31,14 @@ class PerceptionEngine:
         self._frame_id = 0
         self.last_frame: np.ndarray | None = None  # most recent frame (for annotation)
 
-        self.camera = CsiCamera(
-            sensor_id=config.CAMERA_SENSOR_ID,
+        self.camera = MjpegCamera(
+            url=config.CAMERA_URL,
             width=config.CAMERA_WIDTH,
             height=config.CAMERA_HEIGHT,
-            fps=config.CAMERA_FPS,
-            flip=config.CAMERA_FLIP,
             simulate=self.simulate,
         )
-        # If the camera fell back to synthetic frames, we're effectively simulating.
-        self.simulate = self.simulate or self.camera.simulate
+        # The MJPEG reader connects in the background; simulate is re-evaluated per
+        # snapshot from camera.simulate (it flips to False once real frames arrive).
 
         wanted = backend_names if backend_names is not None else config.DETECTOR_BACKENDS
         if self.simulate:
@@ -57,7 +55,9 @@ class PerceptionEngine:
     # Backend management
     # ----------------------------------------------------------------- #
     def _load_dummy(self) -> None:
-        self.simulate = True
+        # Load the dummy detector. Does NOT set self.simulate — a dummy detector
+        # (no real model) is orthogonal to synthetic frames. "simulate" tracks the
+        # camera/forced state; the dummy shows up in the backends list instead.
         dummy = backends.build("dummy")
         dummy.load()
         self._backends = {dummy.name: dummy}
@@ -119,7 +119,8 @@ class PerceptionEngine:
             height=height,
             detections=detections,
             backends=self.loaded_backends(),
-            simulate=self.simulate,
+            # Effective: forced simulate, or the camera is still on synthetic frames.
+            simulate=self.simulate or self.camera.simulate,
             latency_ms=latency_ms,
             prompts=self.prompts,
         )

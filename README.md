@@ -159,21 +159,30 @@ brain/.venv/bin/python -m brain.test_movement
 > **Safety:** on the first real run, elevate the robot / keep the legs clear, and
 > see [Movement safety / brownout](#movement-safety--brownout) below.
 
-### Perception (Jetson)
+### Perception
 
-The robot's "eyes": a CSI camera feeds a `PerceptionEngine` that runs object
-detection and serves results over HTTP. Two detector backends behind one engine,
-each **loadable/unloadable** (the 8GB Jetson can't hold both *and* the future
-LLM+Whisper+Piper — free one on demand):
+The robot's "eyes" span both nodes: the **camera is on the Pi** (CSI, captured
+with picamera2) and streamed as **MJPEG** over the LAN; the **Jetson** pulls that
+stream and runs the detectors (the Pi 4B can't). Two detector backends behind one
+`PerceptionEngine`, each **loadable/unloadable** (the 8GB Jetson can't hold both
+*and* the future LLM+Whisper+Piper — free one on demand):
 
 - **YOLO** (Ultralytics) — fast, fixed COCO classes. Default backend.
 - **NanoOWL** — open-vocabulary, text-prompted ("a person", "a red ball"); the
   future agent loop steers it at runtime via `/prompts`.
 
-Install with the helper (do this after `brain/setup.sh`). It installs the pieces
-the **right** way for Jetson — apt OpenCV (has GStreamer, for the CSI camera) and
-Ultralytics — because the plain PyPI `torch`/`opencv-python` wheels are the wrong
-builds (no CUDA, no GStreamer), so they must **not** go in a pip requirements file:
+**Pi side** — the robot server serves the camera automatically:
+
+```bash
+# picamera2 is normally preinstalled on Raspberry Pi OS Bookworm; else:
+sudo apt install -y python3-picamera2      # visible to the --system-site-packages venv
+robot/.venv/bin/python -m robot.server     # serves /camera/stream (MJPEG) + /camera/frame
+curl http://<pi>:8000/camera/frame -o test.jpg    # quick check
+```
+
+**Jetson side** — install the detectors (after `brain/setup.sh`). The helper
+installs them the **right** way; note the Jetson does **not** need
+OpenCV-with-GStreamer (the camera pipeline is on the Pi — it just decodes MJPEG):
 
 ```bash
 cd ~/crab
@@ -183,16 +192,18 @@ bash brain/setup_perception.sh
 TORCH_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 bash brain/setup_perception.sh
 ```
 
-NanoOWL (open-vocabulary) stays manual — it needs `torch2trt` + a built TensorRT
-encoder engine; see `brain/requirements-perception.txt`. The base subset alone
-(`pip install -r brain/requirements-perception.txt`) runs the server + simulate
-path anywhere.
+`torch`/`opencv` deliberately aren't pip requirements — on Jetson the PyPI wheels
+are the wrong builds (torch: no CUDA). NanoOWL stays manual (`torch2trt` + a built
+TensorRT engine); see `brain/requirements-perception.txt`. The base subset alone
+runs the server + simulate path anywhere.
 
-Run the perception server (port 8100) and query it:
+Run the perception server (port 8100) and query it. It reads the camera from the
+robot at `brain/config.py`'s `BASE_URL` + `/camera/stream` (override with
+`PERCEPTION_CAMERA_URL`):
 
 ```bash
 brain/.venv/bin/python -m brain.perception.server
-curl localhost:8100/health
+curl localhost:8100/health                                     # simulate:false when the Pi stream is live
 curl localhost:8100/snapshot                                   # detections for one frame
 curl -XPOST localhost:8100/prompts -H 'content-type: application/json' \
      -d '{"prompts":["a person","a ball"]}'                    # steer NanoOWL
@@ -207,11 +218,11 @@ brain/.venv/bin/python -m brain.test_perception --frames 5
 brain/.venv/bin/python -m brain.test_perception --backend nanoowl --prompts "a person,a ball"
 ```
 
-CSI camera settings (sensor id, resolution, `flip-method`) are env-overridable —
-see `brain/perception/config.py` (`PERCEPTION_CAMERA_*`). Set
-`PERCEPTION_SIMULATE=1` to run on synthetic frames + a dummy detector with no
-camera or models (dev/CI). A `PerceptionSnapshot` (see `brain/perception/types.py`)
-is the perception half of the future experience record.
+Set `PERCEPTION_SIMULATE=1` (Jetson) / `PICRAWLER_SIMULATE=1` (Pi) to run on
+synthetic frames + a dummy detector with no camera or models — the whole
+Pi→MJPEG→Jetson→detect link runs off-hardware. A `PerceptionSnapshot` (see
+`brain/perception/types.py`) is the perception half of the future experience
+record.
 
 ### Off-hardware dev
 
