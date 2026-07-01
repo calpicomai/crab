@@ -68,6 +68,12 @@ distance_sensor = (
     else None
 )
 
+# Wire the ultrasonic into the gait engine's reflex: walk() then checks forward
+# clearance between gait cycles and aborts early if something's too close. With no
+# sensor (disabled / simulate laptop) the reflex stays inert.
+if distance_sensor is not None:
+    engine.clearance_fn = distance_sensor.read_cm
+
 
 def _status_with_distance():
     """Engine status augmented with the current ultrasonic clearance."""
@@ -144,13 +150,14 @@ def camera_frame() -> Response:
 
 @app.post(ACTION_PATHS[Action.WALK], response_model=CommandResponse)
 def walk(cmd: WalkCommand) -> CommandResponse:
-    engine.walk(cmd.steps, cmd.speed)
-    return CommandResponse(
-        ok=True,
-        action=Action.WALK,
-        detail=f"walked {cmd.steps} step(s) at speed {cmd.speed}",
-        status=engine.get_status(),
-    )
+    engine.walk(cmd.steps, cmd.speed, min_clearance_cm=cmd.min_clearance_cm)
+    status = _status_with_distance()
+    status.reflex_stopped = engine.reflex_stopped
+    if engine.reflex_stopped:
+        detail = f"reflex-stopped mid-walk (clearance {status.distance_cm}cm) during {cmd.steps}-step walk"
+    else:
+        detail = f"walked {cmd.steps} step(s) at speed {cmd.speed}"
+    return CommandResponse(ok=True, action=Action.WALK, detail=detail, status=status)
 
 
 @app.post(ACTION_PATHS[Action.TURN], response_model=CommandResponse)

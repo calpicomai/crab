@@ -65,8 +65,17 @@ class RobotClient:
         resp.raise_for_status()
         return resp.json()
 
-    def walk(self, steps: int = 1, speed: int | None = None) -> CommandResponse:
-        cmd = WalkCommand(steps=steps, **({} if speed is None else {"speed": speed}))
+    def walk(
+        self, steps: int = 1, speed: int | None = None, min_clearance_cm: float | None = None
+    ) -> CommandResponse:
+        # min_clearance_cm: optional per-walk reflex threshold (the Pi aborts the
+        # walk early if forward clearance drops below it). None -> Pi default.
+        extra: dict = {}
+        if speed is not None:
+            extra["speed"] = speed
+        if min_clearance_cm is not None:
+            extra["min_clearance_cm"] = min_clearance_cm
+        cmd = WalkCommand(steps=steps, **extra)
         return self._post(Action.WALK, cmd.model_dump())
 
     def turn(self, degrees: float, speed: int | None = None) -> CommandResponse:

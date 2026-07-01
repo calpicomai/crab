@@ -85,6 +85,14 @@ class WalkCommand(BaseModel):
 
     steps: int = Field(default=1, ge=0, le=100, description="Number of gait cycles.")
     speed: int = Field(default=DEFAULT_SPEED, ge=1, le=100, description="Gait speed 1-100.")
+    # Optional safety margin: the Pi checks forward clearance between gait cycles
+    # and aborts the walk early if it drops below this (a fast on-robot reflex, so
+    # motion can't blindly ram an obstacle mid-stride). None -> use the Pi's
+    # configured default. This is high-level intent (a margin), not per-servo
+    # timing, so it respects the "no low-level control over the network" rule.
+    min_clearance_cm: float | None = Field(
+        default=None, ge=0.0, description="Reflex-stop clearance; None = Pi default."
+    )
 
 
 class TurnCommand(BaseModel):
@@ -134,6 +142,10 @@ class RobotStatus(BaseModel):
     # Forward ultrasonic clearance in cm (None = no sensor / no echo). The brain's
     # wander/avoid loop reads this from get_status to decide when to turn away.
     distance_cm: float | None = None
+    # True when the most recent walk aborted early because the Pi's reflex saw the
+    # forward clearance drop below the reflex distance mid-stride. The brain treats
+    # this as an authoritative close-range obstacle and steers away.
+    reflex_stopped: bool = False
 
 
 class CommandResponse(BaseModel):

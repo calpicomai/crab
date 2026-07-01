@@ -16,6 +16,15 @@ ask it for a heading:
     * gap off to a side        -> turn toward it (aim at free space),
     * boxed in / no gap        -> rotate-to-scan (sweep the fixed sonar) then re-pick.
 
+Two control layers keep it from hitting things (autonomy v3): this deliberative
+costmap picks the heading, and a **fast reflex on the Pi** guards every stride —
+each ``walk`` carries a ``min_clearance_cm`` and the Pi aborts the stride the
+moment forward clearance drops below it (the gait is blocking, so without the
+reflex the robot is blind mid-stride — the cause of it nosing into walls). A
+reflex-stop is fed back into the costmap as a close obstacle and steered away
+from. Motion is continuous (no stop-and-go pause) because the reflex, not a
+conservative cadence, provides the safety.
+
 This replaces autonomy v1's "sonar OR camera -> turn a fixed amount" (which
 couldn't aim at a gap and let a pole slip through). It is the behavior-tree /
 reactive fallback from the roadmap and the same ``read sensors -> model -> decide
@@ -31,10 +40,10 @@ perception http://localhost:8100):
     python -m brain.wander --max-steps 30
 
 Camera avoidance needs the perception server running; if it's unreachable the
-loop logs once and continues on ultrasonic alone. For arbitrary obstacles (a
-pole), run perception with NanoOWL — on startup we push obstacle prompts
-(config.COSTMAP_OBSTACLE_PROMPTS) so open-vocab detection flags them; YOLO alone
-only reports its COCO classes.
+loop logs once and continues on ultrasonic + reflex alone. For arbitrary
+obstacles (a pole), the camera must run NanoOWL — on startup we try to LOAD it
+and push obstacle prompts (config.COSTMAP_OBSTACLE_PROMPTS); if it's still
+YOLO-only we warn loudly, because YOLO's COCO classes never flag a pole.
 
 SAFETY: elevate the robot / keep the area clear for the first run. Ctrl+C stops
 it and sits the robot down.
@@ -69,20 +78,35 @@ def _fetch_snapshot(http: httpx.Client) -> tuple[dict | None, bool]:
         return None, False
 
 
-def _push_obstacle_prompts(http: httpx.Client, prompts: list[str]) -> None:
-    """If the perception server has NanoOWL loaded, steer it at obstacle prompts
-    so the camera flags arbitrary obstacles (poles) YOLO's COCO classes miss.
-    Best-effort: a YOLO-only or unreachable server is fine (graceful subset)."""
-    if not prompts:
-        return
+def _ensure_nanoowl(http: httpx.Client, prompts: list[str]) -> None:
+    """Make sure the camera can actually see poles: load NanoOWL (open-vocab) and
+    steer it at obstacle prompts. YOLO only flags COCO classes, so without this a
+    thin pole is invisible to the camera and only the narrow sonar beam (which
+    misses it) is left — the exact gap behind the pole collisions.
+
+    Best-effort: tries to load NanoOWL, then warns LOUDLY if perception is still
+    YOLO-only (so the user knows poles won't be seen) or unreachable."""
     try:
-        health = http.get("/health", timeout=1.0).json()
-        if "nanoowl" not in (health.get("backends") or []):
-            return  # no open-vocab backend -> nothing to steer
-        http.post("/prompts", json={"prompts": prompts}, timeout=2.0).raise_for_status()
-        print(f"  (perception: set NanoOWL obstacle prompts: {', '.join(prompts)})")
-    except Exception:  # noqa: BLE001 - perception optional
+        http.post("/load", json={"backend": "nanoowl"}, timeout=10.0)
+    except Exception:  # noqa: BLE001 - load is best-effort (may already be loaded / slow TRT build)
         pass
+    try:
+        backends = (http.get("/health", timeout=2.0).json() or {}).get("backends") or []
+    except Exception:  # noqa: BLE001 - perception optional
+        print("  (perception unreachable — running on ultrasonic + reflex only)")
+        return
+    if "nanoowl" in backends:
+        if prompts:
+            try:
+                http.post("/prompts", json={"prompts": prompts}, timeout=2.0).raise_for_status()
+                print(f"  (perception: NanoOWL loaded, obstacle prompts set: {', '.join(prompts)})")
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        print("  !! WARNING: perception has no NanoOWL backend (loaded: "
+              f"{backends or 'none'}). Thin poles / chair legs will NOT be seen by "
+              "the camera — only sonar + the Pi reflex protect against them. Build "
+              "the NanoOWL TensorRT engine and retry to close this gap.")
 
 
 def _read_distance(client: RobotClient) -> float | None:
@@ -125,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--delay", type=float, default=config.WANDER_STEP_DELAY_S, help="Seconds between decisions.")
     parser.add_argument("--no-camera", action="store_true", help="Disable camera-assisted avoidance.")
     parser.add_argument("--no-scan", action="store_true", help="Disable rotate-to-scan when boxed in.")
+    parser.add_argument("--reflex-cm", type=float, default=config.WANDER_REFLEX_CM,
+                        help="Reflex clearance handed to the Pi: it aborts a stride below this.")
     parser.add_argument("--perception-url", default=config.PERCEPTION_BASE_URL, help="Perception server base URL.")
     parser.add_argument("--log", default=None, help="Append per-step experience records as JSONL to this file.")
     args = parser.parse_args(argv)
@@ -143,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     log_fh = open(args.log, "a") if args.log else None
     camera_ok = use_camera
     if perc is not None:
-        _push_obstacle_prompts(perc, config.COSTMAP_OBSTACLE_PROMPTS)
+        _ensure_nanoowl(perc, config.COSTMAP_OBSTACLE_PROMPTS)
     step = 0
 
     try:
@@ -179,11 +205,25 @@ def main(argv: list[str] | None = None) -> int:
                 _rotate_to_scan(client, costmap, args.speed)
                 heading, forward_clear = costmap.best_heading()
 
+            reflex = False
             if forward_clear:
-                resp = client.walk(args.steps, speed=args.speed)
-                costmap.apply_motion(walked=True)
-                shown = f"{dist:.0f}cm" if dist is not None else "no echo"
-                action, detail = "walk", f"forward x{args.steps} (clear ahead, sonar {shown})"
+                resp = client.walk(args.steps, speed=args.speed, min_clearance_cm=args.reflex_cm)
+                reflex = bool(resp.status and resp.status.reflex_stopped)
+                if reflex:
+                    # The Pi stopped the stride: an obstacle appeared closer than the
+                    # reflex margin. Treat it as an authoritative close obstacle dead
+                    # ahead and don't credit the forward motion we didn't finish.
+                    rd = resp.status.distance_cm if resp.status else None
+                    # A reflex-stop means something is within the reflex margin, so
+                    # record it at that close range (never farther) to be sure it
+                    # blocks forward and we steer away next cycle.
+                    close = min(rd, args.reflex_cm) if rd is not None else args.reflex_cm
+                    costmap.integrate_sonar(close)
+                    action, detail = "walk", f"REFLEX-STOP at {rd}cm (obstacle appeared mid-stride)"
+                else:
+                    costmap.apply_motion(walked=True)
+                    shown = f"{dist:.0f}cm" if dist is not None else "no echo"
+                    action, detail = "walk", f"forward x{args.steps} (clear ahead, sonar {shown})"
             else:
                 # Aim at the gap, but clamp the per-step turn so motion stays gentle.
                 turn = max(-args.turn_deg, min(args.turn_deg, heading))
@@ -197,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
                 log_fh.write(json.dumps({
                     "step": step, "distance_cm": dist, "heading": heading,
                     "forward_clear": forward_clear, "scanned": do_scan,
+                    "reflex_stopped": reflex,
                     "action": resp.action.value, "ok": resp.ok,
                     "costmap": costmap.render_ascii(),
                 }) + "\n")
