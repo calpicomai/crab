@@ -1,0 +1,33 @@
+# Perception (Jetson) dependencies — layered.
+#
+# Install this file's base subset with:
+#   brain/.venv/bin/pip install -r brain/requirements-perception.txt
+# The base subset alone enables the SERVER, the simulate/dummy path, and the
+# test runner (so you can validate wiring before the heavy models are present).
+
+# --- Base (pip-installable anywhere) -----------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+numpy>=1.24
+Pillow>=10.0
+
+# --- JetPack / CUDA-specific — DO NOT plain-pip these; follow NVIDIA's steps ---
+#
+# OpenCV with GStreamer (for the CSI camera) is usually provided by JetPack.
+# Verify GStreamer support:
+#   python3 -c "import cv2; print('GStreamer:', 'YES' in cv2.getBuildInformation().split('GStreamer')[1][:20])"
+#
+# YOLO backend:
+#   1) Install the NVIDIA Jetson torch + torchvision wheels for your JetPack.
+#   2) pip install ultralytics        # sees the pre-installed torch
+#   Default weights 'yolov8n.pt' download on first run; export to TensorRT for
+#   speed:  yolo export model=yolov8n.pt format=engine  (then set PERCEPTION_YOLO_WEIGHTS=yolov8n.engine)
+#
+# NanoOWL backend (open-vocabulary):
+#   Needs torch, transformers, torch2trt, and TensorRT (JetPack), then nanoowl:
+#     pip install transformers
+#     git clone https://github.com/NVIDIA-AI-IOT/torch2trt && cd torch2trt && python3 setup.py install --user
+#     git clone https://github.com/NVIDIA-AI-IOT/nanoowl  && cd nanoowl  && python3 setup.py develop --user
+#   Build the image-encoder TensorRT engine (path -> PERCEPTION_NANOOWL_ENGINE):
+#     python3 -m nanoowl.build_image_encoder_engine data/owl_image_encoder_patch32.engine

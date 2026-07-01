@@ -83,17 +83,33 @@ auto-enables `simulate`: it logs the intended action and returns success, so the
 whole robot↔brain link runs off-hardware. Force it anywhere with
 `PICRAWLER_SIMULATE=1`. `RobotStatus.simulate` reports which mode is active.
 
+## Perception (`brain/perception/`)
+
+The Jetson's eyes. `PerceptionEngine` owns a `CsiCamera` (GStreamer
+`nvarguscamerasrc`, synthetic-frame fallback) and a registry of loadable
+detector **backends** behind a common `DetectorBackend` ABC: `yolo` (fixed COCO),
+`nanoowl` (open-vocabulary, prompt-steered), and `dummy` (off-hardware/CI).
+Backends lazily import their heavy libs in `load()` and free them in `unload()`
+so a detector's RAM can be reclaimed for the LLM/Whisper/Piper. `detect()` fuses
+every loaded backend's output into a `PerceptionSnapshot`. Served over HTTP
+(`perception/server.py`, port 8100) and usable in-process. Simulate (synthetic
+frames + dummy) via `PERCEPTION_SIMULATE=1` or auto when cv2/camera/models are
+missing — mirrors the GaitEngine fallback. `PerceptionSnapshot` lives in
+`brain/perception/types.py` (brain-internal, **not** `shared/`) and is the
+perception half of the experience-record seam.
+
 ## Workflow: staged, STOP between stages
 
 Do NOT build the whole system at once. Each stage must be independently
 runnable, and you STOP after each so the user can test on real hardware.
 
-- **Done:** Scaffold + Stage 1 (movement link: Pi server, Jetson client,
-  one-shot test, systemd unit).
-- **Not built yet (roadmap in README):** perception, voice I/O, Ollama agent
-  loop, behavior-tree fallback, the learning stack (episodic memory → skill
-  library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM, and
-  the real custom gait.
+- **Done:** Scaffold + Stage 1 (movement link); movement-safety (staged stand/
+  sit, per-leg diagnostic, home-on-startup); **Perception** (`brain/perception/`:
+  CSI camera + YOLO/NanoOWL fused, loadable/unloadable, HTTP server + test).
+- **Not built yet (roadmap in README):** voice I/O, Ollama agent loop,
+  behavior-tree fallback, the learning stack (episodic memory → skill library →
+  outcome self-tuning → offline fine-tune), spatial mapping/SLAM, and the real
+  custom gait.
 
 ## Ask before assuming
 

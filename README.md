@@ -152,6 +152,52 @@ brain/.venv/bin/python -m brain.test_movement
 > **Safety:** on the first real run, elevate the robot / keep the legs clear, and
 > see [Movement safety / brownout](#movement-safety--brownout) below.
 
+### Perception (Jetson)
+
+The robot's "eyes": a CSI camera feeds a `PerceptionEngine` that runs object
+detection and serves results over HTTP. Two detector backends behind one engine,
+each **loadable/unloadable** (the 8GB Jetson can't hold both *and* the future
+LLM+Whisper+Piper — free one on demand):
+
+- **YOLO** (Ultralytics) — fast, fixed COCO classes. Default backend.
+- **NanoOWL** — open-vocabulary, text-prompted ("a person", "a red ball"); the
+  future agent loop steers it at runtime via `/prompts`.
+
+Install (base subset runs the server + simulate path anywhere; the detectors are
+JetPack-specific — see the comments in the requirements file):
+
+```bash
+cd ~/crab
+brain/.venv/bin/pip install -r brain/requirements-perception.txt
+# then, per NVIDIA's steps: Jetson torch/torchvision -> ultralytics (YOLO),
+# and transformers + torch2trt + TensorRT + nanoowl + a built encoder engine (NanoOWL).
+```
+
+Run the perception server (port 8100) and query it:
+
+```bash
+brain/.venv/bin/python -m brain.perception.server
+curl localhost:8100/health
+curl localhost:8100/snapshot                                   # detections for one frame
+curl -XPOST localhost:8100/prompts -H 'content-type: application/json' \
+     -d '{"prompts":["a person","a ball"]}'                    # steer NanoOWL
+curl -XPOST localhost:8100/load   -d '{"backend":"nanoowl"}' -H 'content-type: application/json'
+curl -XPOST localhost:8100/unload -d '{"backend":"nanoowl"}' -H 'content-type: application/json'
+```
+
+Smoke test (prints detections, writes annotated JPEGs to `perception_out/`):
+
+```bash
+brain/.venv/bin/python -m brain.test_perception --frames 5
+brain/.venv/bin/python -m brain.test_perception --backend nanoowl --prompts "a person,a ball"
+```
+
+CSI camera settings (sensor id, resolution, `flip-method`) are env-overridable —
+see `brain/perception/config.py` (`PERCEPTION_CAMERA_*`). Set
+`PERCEPTION_SIMULATE=1` to run on synthetic frames + a dummy detector with no
+camera or models (dev/CI). A `PerceptionSnapshot` (see `brain/perception/types.py`)
+is the perception half of the future experience record.
+
 ### Off-hardware dev
 
 Both nodes run on a laptop with no SunFounder hardware: the `GaitEngine`
@@ -210,9 +256,11 @@ wired to the channel picrawler expects (`PIN_LIST`). Also **fully charge** the
 2×18650 cells — low cells are a common brownout cause. Once every leg reaches
 standing individually without stalling, `stand` via the server should be stable.
 
-## Roadmap (documented, NOT built yet)
+## Roadmap
 
-1. **Perception** — NanoOWL / YOLO detectors feeding the brain; loadable/unloadable.
+1. ✅ **Perception** — YOLO + NanoOWL detectors feeding the brain, loadable/
+   unloadable, served over HTTP (`brain/perception/`). *Built — see
+   [Perception (Jetson)](#perception-jetson).*
 2. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
 3. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
    abilities exposed as tools that call `RobotClient`.
