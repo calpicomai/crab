@@ -73,7 +73,6 @@ than a bare `pip install` (see [Troubleshooting](#troubleshooting)).
 ```bash
 cd ~/crab                      # repo root, so `import shared` resolves
 bash robot/setup.sh            # creates robot/.venv and installs deps
-# robot_hat + picrawler come from the SunFounder installer on the Pi.
 
 # Run directly (real servos):
 robot/.venv/bin/python -m robot.server
@@ -81,12 +80,19 @@ robot/.venv/bin/python -m robot.server
 PICRAWLER_SIMULATE=1 robot/.venv/bin/python -m robot.server
 ```
 
+`robot/setup.sh` creates the venv with **`--system-site-packages`** so it can
+import SunFounder's `picrawler` / `robot_hat` (their installer puts them in the
+system Python — an isolated venv can't see them, and the server would silently
+run in simulate mode). The script prints whether the libs are visible. If not,
+run SunFounder's installer, then re-run `robot/setup.sh`.
+
 <details><summary>Manual venv setup (equivalent to the script)</summary>
 
 ```bash
 cd ~/crab
-python3 -m venv robot/.venv
+python3 -m venv --system-site-packages robot/.venv   # --system-site-packages: see picrawler/robot_hat
 robot/.venv/bin/pip install -r robot/requirements.txt
+robot/.venv/bin/python -c "import picrawler, robot_hat; print('hardware libs OK')"
 ```
 </details>
 
@@ -134,7 +140,8 @@ brain/.venv/bin/python -m brain.test_movement
 # get_status → stand → walk(1) → sit, printing each response.
 ```
 
-> **Safety:** on the first real run, elevate the robot / keep the legs clear.
+> **Safety:** on the first real run, elevate the robot / keep the legs clear, and
+> see [Movement safety / brownout](#movement-safety--brownout) below.
 
 ### Off-hardware dev
 
@@ -151,6 +158,48 @@ and point the test at `--base-url http://localhost:8000`.
   into `robot/.venv` / `brain/.venv`. Do **not** pass `--break-system-packages` —
   it pollutes the system Python and defeats the per-node isolation the project
   relies on.
+- **`ModuleNotFoundError: No module named 'picrawler'`** inside `robot/.venv`
+  (so `/health` reports `simulate: true` on the real robot): the venv can't see
+  the system-installed SunFounder libs. Recreate it **with**
+  `--system-site-packages` (re-run `robot/setup.sh`, which now does this), and
+  confirm they're installed in the system Python.
+
+### Movement safety / brownout
+
+**Symptom:** the Pi resets when the robot moves — your SSH session drops
+("Connection reset by peer" / "Broken pipe"), the server process dies, and the
+next request times out. Often the robot folds/extends legs oddly first.
+
+**Cause:** driving many servos at once is a big current spike. On the standard
+2×18650 Robot HAT, the Pi and the servos share one rail, so the spike sags the
+rail and browns out the Pi. It's worse if the cells are low, or if a leg is
+mis-calibrated / mis-wired / has a badly seated servo horn and **stalls** (a
+stalled servo draws max current continuously).
+
+**What the software now does:** `stand`/`sit` are **staged** — one leg at a time
+via `do_single_leg`, at a low speed (`PICRAWLER_STAND_SPEED`, default 40) with a
+settle delay (`PICRAWLER_LEG_SETTLE_S`, default 0.2s), so only ~3 servos draw
+current at once. The default gait speed is 50. Tune gentler if needed:
+
+```bash
+PICRAWLER_STAND_SPEED=30 PICRAWLER_LEG_SETTLE_S=0.35 robot/.venv/bin/python -m robot.server
+```
+
+**Isolating a bad leg** — run the Pi-local diagnostic (no network), with the
+robot **elevated and legs clear**:
+
+```bash
+cd ~/crab
+robot/.venv/bin/python -m robot.diagnose --all --speed 30   # steps legs 0→3, pausing
+robot/.venv/bin/python -m robot.diagnose --leg 2            # just one leg
+```
+
+Watch each leg move to its **standing** position. If a leg drives to a
+wrong/extreme angle or buzzes/binds (a stall), **cut power** and fix that leg:
+re-run the SunFounder calibration tool, re-seat the servo horn, or check it's
+wired to the channel picrawler expects (`PIN_LIST`). Also **fully charge** the
+2×18650 cells — low cells are a common brownout cause. Once every leg reaches
+standing individually without stalling, `stand` via the server should be stable.
 
 ## Roadmap (documented, NOT built yet)
 

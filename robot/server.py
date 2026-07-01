@@ -24,6 +24,7 @@ from shared import (
     GetStatusCommand,
     SitCommand,
     StandCommand,
+    TestLegCommand,
     TurnCommand,
     WalkCommand,
 )
@@ -83,6 +84,18 @@ def sit(_cmd: SitCommand) -> CommandResponse:
 @app.post(ACTION_PATHS[Action.GET_STATUS], response_model=CommandResponse)
 def get_status(_cmd: GetStatusCommand) -> CommandResponse:
     return CommandResponse(ok=True, action=Action.GET_STATUS, detail="status", status=engine.get_status())
+
+
+@app.post(ACTION_PATHS[Action.TEST_LEG], response_model=CommandResponse)
+def test_leg(cmd: TestLegCommand) -> CommandResponse:
+    """Diagnostic: gently move one leg to the standing pose (see robot/diagnose.py)."""
+    engine.test_leg(cmd.leg, cmd.speed)
+    return CommandResponse(
+        ok=True,
+        action=Action.TEST_LEG,
+        detail=f"moved leg {cmd.leg} to standing pose at speed {cmd.speed}",
+        status=engine.get_status(),
+    )
 
 
 def main() -> None:

@@ -21,6 +21,7 @@ from shared import (
     GetStatusCommand,
     SitCommand,
     StandCommand,
+    TestLegCommand,
     TurnCommand,
     WalkCommand,
 )
@@ -80,3 +81,9 @@ class RobotClient:
 
     def get_status(self) -> CommandResponse:
         return self._post(Action.GET_STATUS, GetStatusCommand().model_dump())
+
+    def test_leg(self, leg: int, speed: int | None = None) -> CommandResponse:
+        """Diagnostic: move one leg (0-3) to the standing pose. See robot/diagnose.py
+        for the preferred Pi-local version that needs no network."""
+        cmd = TestLegCommand(leg=leg, **({} if speed is None else {"speed": speed}))
+        return self._post(Action.TEST_LEG, cmd.model_dump())

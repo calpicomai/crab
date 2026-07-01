@@ -45,11 +45,23 @@ brain. Two physical nodes on the same LAN:
 ## Gait seam (important)
 
 `robot/gait.py` exposes `GaitEngine` with fixed method signatures
-(`stand`/`sit`/`walk`/`turn`/`get_status`). Stage 1 backs them with picrawler's
-canned `do_action`. The **real custom, coordinate-based gait** will replace those
-bodies (`do_action` → `crawler.do_step(coords, speed)`) **without changing the
-signatures, the HTTP protocol, or the client.** Canned calls are marked
-`# TODO: real custom gait`.
+(`stand`/`sit`/`walk`/`turn`/`test_leg`/`get_status`). `walk`/`turn` are backed by
+picrawler's canned `do_action` (marked `# TODO: real custom gait`). `stand`/`sit`
+are **staged**: one leg at a time via `do_single_leg` to picrawler's stand/sit
+coordinates, at `config.STAND_SPEED` with `config.LEG_SETTLE_S` between legs — a
+power-safety measure (all-12-at-once browns out the shared Robot HAT rail). This
+per-leg staging is the first step toward the custom coordinate-based gait, which
+will replace the remaining `do_action` bodies (`→ crawler.do_step(coords, speed)`)
+**without changing the signatures, the HTTP protocol, or the client.** Default
+gait speed is **50** (picrawler's own default; gentler on current).
+
+## Movement safety
+
+Never drive all 12 servos at once — the current spike browns out the Pi on the
+shared 2×18650 rail. Keep motion staged/slow. `test_leg(leg, speed)` +
+`robot/diagnose.py` (Pi-local, no network) move one leg at a time to isolate a
+mis-calibrated/mis-wired/stalling leg. See the README "Movement safety /
+brownout" section.
 
 ## Calibration convention
 
