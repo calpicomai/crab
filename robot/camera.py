@@ -32,21 +32,24 @@ except Exception as exc:  # noqa: BLE001 - any failure means "no camera hardware
     logger.info("picamera2 unavailable (%s); camera will produce synthetic frames", exc)
 
 
-class _FrameBuffer:
-    """Holds the latest JPEG frame; file-like so picamera2's FileOutput can write it."""
+class _FrameBuffer(io.BufferedIOBase):
+    """Holds the latest JPEG frame. Subclasses io.BufferedIOBase because
+    picamera2's FileOutput requires the output to be one (this is the same
+    pattern as picamera2's own MJPEG-streaming StreamingOutput example)."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.frame: bytes | None = None
         self._cond = threading.Condition()
 
-    def write(self, buf: bytes) -> int:
+    def writable(self) -> bool:
+        return True
+
+    def write(self, buf) -> int:
         with self._cond:
             self.frame = bytes(buf)
             self._cond.notify_all()
         return len(buf)
-
-    def flush(self) -> None:  # picamera2 FileOutput may call flush()
-        return None
 
     def latest(self, timeout: float = 1.0) -> bytes | None:
         with self._cond:
