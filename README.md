@@ -80,6 +80,15 @@ robot/.venv/bin/python -m robot.server
 PICRAWLER_SIMULATE=1 robot/.venv/bin/python -m robot.server
 ```
 
+On startup the server gently stages into a **standing** pose (instead of
+picrawler's splayed power-on pose). Change it with `PICRAWLER_HOME_ON_START`
+(`stand` / `sit` / `none`); `stand` assumes every leg is calibrated (an
+uncalibrated leg could stall — see [Movement safety](#movement-safety--brownout)):
+
+```bash
+PICRAWLER_HOME_ON_START=sit robot/.venv/bin/python -m robot.server   # or none
+```
+
 `robot/setup.sh` creates the venv with **`--system-site-packages`** so it can
 import SunFounder's `picrawler` / `robot_hat` (their installer puts them in the
 system Python — an isolated venv can't see them, and the server would silently

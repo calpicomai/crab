@@ -26,6 +26,10 @@ WorkingDirectory=/home/pi/crab
 # Set PICRAWLER_SIMULATE=1 here to bench-test without moving servos.
 Environment=PICRAWLER_HOST=0.0.0.0
 Environment=PICRAWLER_PORT=8000
+# On startup the server gently stages into a standing pose (instead of the
+# splayed power-on pose). Set to "sit" or "none" to change; "stand" needs all
+# legs calibrated. Tune gentleness with PICRAWLER_STAND_SPEED / PICRAWLER_LEG_SETTLE_S.
+Environment=PICRAWLER_HOME_ON_START=stand
 ExecStart=/home/pi/crab/robot/.venv/bin/uvicorn robot.server:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=3

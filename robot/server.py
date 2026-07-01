@@ -13,6 +13,7 @@ or via the systemd unit (robot/systemd/picrawler-server.service).
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -35,10 +36,37 @@ from .gait import GaitEngine
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("picrawler.server")
 
-app = FastAPI(title="PiCrawler Robot Server", version="0.1.0")
-
-# Single engine instance, built at startup and shared across requests.
+# Single engine instance, built at import and shared across requests.
 engine = GaitEngine(simulate=config.SIMULATE)
+
+
+def _home_on_start() -> None:
+    """Gently move to config.HOME_ON_START so the robot doesn't sit splayed.
+
+    Runs the same staged, low-speed stand/sit as the commands. Skipped for
+    "none" / unrecognised values. This is why it's safe to auto-start via
+    systemd: only a controlled, one-leg-at-a-time motion happens at boot.
+    """
+    pose = config.HOME_ON_START
+    if pose == "stand":
+        logger.info("Homing to STAND on startup (staged)")
+        engine.stand()
+    elif pose == "sit":
+        logger.info("Homing to SIT on startup (staged)")
+        engine.sit()
+    elif pose in ("", "none"):
+        logger.info("No startup homing (PICRAWLER_HOME_ON_START=none)")
+    else:
+        logger.warning("Unknown PICRAWLER_HOME_ON_START=%r; skipping startup homing", pose)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _home_on_start()
+    yield
+
+
+app = FastAPI(title="PiCrawler Robot Server", version="0.1.0", lifespan=lifespan)
 
 
 @app.get(HEALTH_PATH)
