@@ -1,0 +1,11 @@
+# LLM agent brain (brain/agent/) — the deliberative multimodal layer.
+#
+# The agent talks the OpenAI-compatible chat API, so it needs only the openai
+# SDK as a client; it points at a LOCAL server (llama.cpp's llama-server by
+# default), so nothing here calls the cloud. httpx (already in brain/requirements)
+# is used to pull camera frames and reach the robot/perception servers.
+#
+# The model server itself is NOT a pip dependency — install llama.cpp separately
+# and run llama-server with a VLM (see brain/setup_agent.sh). Off-GPU, the loop's
+# --sim / AGENT_SIMULATE canned policy needs none of this.
+openai>=1.40

@@ -333,6 +333,93 @@ pins/pings are env-overridable on the Pi (`PICRAWLER_ULTRASONIC_TRIG`/`_ECHO`/
 `reflex_stopped`) — with `--log`, as JSONL. Ctrl+C stops and sits. Runs
 end-to-end in simulate.
 
+### LLM brain: multimodal agent loop (`brain/agent/`)
+
+The deliberative layer on top of the reactive avoidance: a **multimodal LLM that
+sees the camera** and drives the robot's abilities as tools. It **free-roams and
+narrates** by default (there's no voice input yet) — each tick it looks at one
+camera frame, says what it sees and why, and picks ONE high-level action; pass a
+goal to steer it.
+
+```bash
+# on the Jetson, with a local model server running (see brain/setup_agent.sh):
+brain/.venv/bin/python -m brain.agent.loop                     # free-roam + narrate
+brain/.venv/bin/python -m brain.agent.loop --goal "find a person"
+brain/.venv/bin/python -m brain.agent.loop --sim --max-ticks 5 # canned policy, no model
+```
+
+- **Backend-agnostic, local, default llama.cpp.** The agent speaks the
+  OpenAI-compatible chat API (`openai` SDK) pointed at a **local** server —
+  `llama-server` from llama.cpp by default (`LLM_BASE_URL=http://localhost:8080/v1`).
+  Swap to Ollama or any compatible server by changing `LLM_BASE_URL`; no cloud.
+- **Multimodal.** It sends the current camera frame (from the robot's
+  `/camera/frame`) as an image to a small VLM (default **Qwen2.5-VL-3B**; SmolVLM2
+  is a lighter fallback). Set `LLM_MULTIMODAL=0` with a text model to run on the
+  perception text summary instead.
+- **Two control layers.** The LLM sets *intent* (slow, ~seconds/decision on an
+  Orin Nano); the Pi reflex + costmap keep it safe in **real time**. Movement
+  tools go through the reflex-protected client, so a bad decision still can't ram
+  something. If the LLM is unreachable or errors, the tick **falls back** to one
+  reactive costmap step.
+- **RAM (8GB).** The VLM does the seeing, so on startup the agent unloads the
+  YOLO/NanoOWL detectors (`AGENT_FREE_PERCEPTION_RAM=1`; `--keep-perception` to
+  skip). In agent mode the reactive safety leans on sonar + reflex.
+
+Tunables: `LLM_BASE_URL`, `LLM_MODEL`, `LLM_MULTIMODAL`, `AGENT_TICK_S`,
+`AGENT_TEMPERATURE`, `AGENT_MAX_TOKENS`, `AGENT_REFLEX_CM`,
+`AGENT_FREE_PERCEPTION_RAM`, `AGENT_SIMULATE`, `AGENT_SYSTEM_PROMPT`. Each tick
+emits an **experience record** (frame ref + status + goal + narration + action +
+response) — with `--log`, as JSONL. Runs end-to-end in simulate (`--sim`).
+
+### Pet mode: a robot pet that grows its own personality (`brain/pet/`)
+
+The "living creature" mode. You **name it once and it grows its own personality
+from experience** — it roams, has **moods**, **remembers** what it sees, reacts
+with little **gestures**, and over runs becomes a distinct individual.
+
+```bash
+brain/.venv/bin/python -m brain.pet --name Nibbles     # meet your pet
+brain/.venv/bin/python -m brain.pet --sim --duration 60  # off-GPU, canned inner voice
+brain/.venv/bin/python -m brain.pet --no-llm            # pure reactive + mood + memory
+```
+
+Two layers run at their own pace so it's **always moving yet smart**:
+
+- **Body** (fast, always on) — a continuous reactive control loop (`brain/costmap.py`
+  + the Pi reflex) with **steering hysteresis**, so it moves smoothly and **no
+  longer stops and pans side to side**. It's the only thing that commands motion,
+  so the pet physically can't ram anything.
+- **Mind** (slow, background, optional) — every few seconds it looks through the
+  camera and reacts *in character* (its evolving personality + current mood +
+  recalled memories), nudging the body's heading and firing a gesture. With a
+  local VLM (llama-server) up, that's its real inner voice; without one it uses a
+  canned voice, so **it still feels alive today** on mood + memory alone.
+
+What makes it a pet:
+
+- **Personality that develops + persists** (`brain/pet/identity.py`) — a name +
+  a random temperament seed, then a **character summary re-condensed from its
+  memories** every so often and saved to `PET_HOME` (default `~/.picrawler_pet`).
+  Same pet across runs, becoming more itself. (Prompt/summary growth that
+  persists — not model fine-tuning; that's a far-later stage.)
+- **Moods** (`brain/pet/mood.py`) — curious / excited / playful / cautious /
+  startled / bored / sleepy, shifting from what happens (sees a person → excited;
+  a close call → startled; nothing for a while → bored → rests). Mood colors both
+  its words and its pace.
+- **Expressive gestures** (`brain/pet/expressions.py`) — a happy wiggle, a curious
+  head-tilt, resting when sleepy — all small, reflex-protected moves.
+- **Episodic memory** (`brain/pet/memory.py`) — a local SQLite log of what it saw
+  and felt; drives recognition and feeds the personality growth. First piece of
+  the roadmap's learning stack.
+
+Honest limits: personality growth is persisted text/tallies, not learned weights;
+"where things are" stays loose (no metric map); narration is **text** — giving it
+an actual **voice** (Piper TTS) is the next stage and is what will really make it
+land. Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`, `PET_EVOLVE_EVERY`,
+`PET_HYSTERESIS_TICKS`, plus the shared LLM/costmap/reflex knobs. `wander` remains
+the plain reactive fallback and `brain/agent` the goal-driven agent; `pet` is
+built on both.
+
 ### Custom gait (experimental, tune on hardware)
 
 `walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
@@ -433,13 +520,17 @@ standing individually without stalling, `stand` via the server should be stable.
    (`brain/wander.py` + `brain/costmap.py`); the model-free
    `read→model→decide→act` baseline. *Built — see
    [Autonomy: wander + avoid](#autonomy-wander--avoid-brainwanderpy--braincostmappy).*
-3. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
-4. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
-   abilities exposed as tools that call `RobotClient`; falls back to the reactive
-   wander when the LLM is unavailable/unsure.
+3. ✅ **Multimodal LLM agent loop** — a small VLM (default Qwen2.5-VL-3B via
+   llama.cpp, OpenAI-compatible + swappable) that sees the camera and drives the
+   robot's abilities as tools; free-roams + narrates, falls back to the reactive
+   costmap when the LLM is unavailable. *Built — see
+   [LLM brain: multimodal agent loop](#llm-brain-multimodal-agent-loop-brainagent).*
+4. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS
+   (turns the agent's narration into speech and adds spoken commands).
 5. **Learning stack** (all local, staged):
-   - **Episodic memory** — SQLite / vector store of interactions, people,
-     places, commands, and user corrections the LLM retrieves from (foundation).
+   - **Episodic memory** — 🟡 *started* (`brain/pet/memory.py`: on-device SQLite
+     log the pet remembers from and grows its personality on). Next: richer
+     recall (vector store) of people, places, and corrections.
    - **Skill library** — learned, named action sequences the LLM reuses.
    - **Outcome self-tuning** — adjust gait/action params from success/failure
      feedback (needs sensor signal).
