@@ -46,12 +46,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-steps", type=int, default=0, help="Stop after N steps (0 = until Ctrl+C).")
     parser.add_argument("--min-cm", type=float, default=config.WANDER_MIN_CM, help="Turn away below this clearance.")
     parser.add_argument("--turn-deg", type=float, default=config.WANDER_TURN_DEG, help="Turn amount when blocked.")
-    parser.add_argument("--delay", type=float, default=config.WANDER_STEP_DELAY_S, help="Seconds between steps.")
+    parser.add_argument("--speed", type=int, default=config.WANDER_SPEED, help="Gait speed 1-100 for walk/turn.")
+    parser.add_argument("--steps", type=int, default=config.WANDER_STEPS, help="Steps per clear decision.")
+    parser.add_argument("--delay", type=float, default=config.WANDER_STEP_DELAY_S, help="Seconds between decisions.")
     parser.add_argument("--log", default=None, help="Append per-step experience records as JSONL to this file.")
     args = parser.parse_args(argv)
 
     client = RobotClient(base_url=args.base_url)
-    print(f"Wandering via {client.base_url}  (min_cm={args.min_cm}, turn_deg={args.turn_deg})")
+    print(f"Wandering via {client.base_url}  (min_cm={args.min_cm}, turn_deg={args.turn_deg}, "
+          f"speed={args.speed}, steps={args.steps})")
     print("Elevate the robot for the first run. Ctrl+C to stop.\n")
 
     log_fh = open(args.log, "a") if args.log else None
@@ -71,12 +74,12 @@ def main(argv: list[str] | None = None) -> int:
             if blocked:
                 if not was_blocked:  # new obstacle: pick a side and commit to it until clear
                     current_dir = next(turn_dirs)
-                resp = client.turn(args.turn_deg * current_dir)
+                resp = client.turn(args.turn_deg * current_dir, speed=args.speed)
                 action, detail = "turn", f"avoid: turn {args.turn_deg * current_dir:+.0f}deg (clear {dist:.0f}cm)"
             else:
-                resp = client.walk(1)
+                resp = client.walk(args.steps, speed=args.speed)
                 shown = f"{dist:.0f}cm" if dist is not None else "no echo"
-                action, detail = "walk", f"forward (clear {shown})"
+                action, detail = "walk", f"forward x{args.steps} (clear {shown})"
             was_blocked = blocked
 
             print(f"[{step:>3}] {detail:<34} -> ok={resp.ok} pose={_pose(resp)}")
