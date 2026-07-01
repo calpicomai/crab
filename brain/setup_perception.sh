@@ -50,6 +50,19 @@ if ! "$PY" -c "import torch" 2>/dev/null; then
     if printf '%s' "$err" | grep -q "libcudss"; then
         echo "torch needs cuDSS (libcudss.so.0); installing nvidia-cudss-cu12 (--no-deps) ..."
         "$PIP" install --no-deps nvidia-cudss-cu12
+        # The wheel drops libcudss.so.0 inside the venv, which is NOT on the
+        # dynamic-loader path — torch's dlopen still can't find it. Register the
+        # directory with ldconfig so torch (and the server, and a future systemd
+        # unit) can load it without any per-launch LD_LIBRARY_PATH.
+        cudss_so="$(find "$VENV" -name 'libcudss.so.0' 2>/dev/null | head -1 || true)"
+        if [ -n "$cudss_so" ]; then
+            cudss_dir="$(dirname "$cudss_so")"
+            echo "Registering cuDSS lib dir on the loader path: $cudss_dir"
+            echo "$cudss_dir" | sudo tee /etc/ld.so.conf.d/crab-cudss.conf >/dev/null
+            sudo ldconfig
+        else
+            echo "WARNING: installed nvidia-cudss-cu12 but couldn't find libcudss.so.0 to register."
+        fi
     fi
 fi
 
