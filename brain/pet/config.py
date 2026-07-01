@@ -27,3 +27,18 @@ PET_HYSTERESIS_TICKS: int = int(os.environ.get("PET_HYSTERESIS_TICKS", "3"))
 
 # Reflex clearance handed to each walk (Pi aborts the stride below it).
 PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGENT_REFLEX_CM)))
+
+# --- Emoting (dog-like body language) -----------------------------------------
+# The pet should express with its body, not just walk. On every mood change it
+# does that mood's signature move; between steps it sprinkles smaller fidgets with
+# probability PET_EMOTE_CHANCE so it always reads as a living creature.
+PET_EMOTE: bool = os.environ.get("PET_EMOTE", "1").strip().lower() not in {"0", "false", "no", "off"}
+PET_EMOTE_CHANCE: float = float(os.environ.get("PET_EMOTE_CHANCE", "0.4"))
+
+# --- Voice (Piper TTS, local, optional) ---------------------------------------
+# Off by default (needs piper + a voice model + an audio device). Turn on with
+# PET_VOICE=1 and point PET_VOICE_MODEL at a Piper .onnx voice. Missing pieces ->
+# the pet just stays text-only (see brain/pet/voice.py).
+PET_VOICE: bool = os.environ.get("PET_VOICE", "").strip().lower() in {"1", "true", "yes", "on"}
+PET_VOICE_MODEL: str | None = os.environ.get("PET_VOICE_MODEL") or None
+PET_VOICE_PLAYER: str = os.environ.get("PET_VOICE_PLAYER", "aplay -q")
