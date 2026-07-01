@@ -22,7 +22,7 @@ logger = logging.getLogger("picrawler.camera")
 # Guarded hardware imports. Missing off-Pi -> synthetic frames.
 try:  # pragma: no cover - depends on deploy target
     from picamera2 import Picamera2
-    from picamera2.encoders import MJPEGEncoder
+    from picamera2.encoders import JpegEncoder
     from picamera2.outputs import FileOutput
 
     _PICAMERA2_AVAILABLE = True
@@ -89,7 +89,13 @@ class PiCamera:
             self._picam2 = Picamera2()
             cfg = self._picam2.create_video_configuration(main={"size": (self.width, self.height)})
             self._picam2.configure(cfg)
-            self._picam2.start_recording(MJPEGEncoder(q=self.quality), FileOutput(self._buffer))
+            # JpegEncoder is picamera2's MJPEG-streaming encoder. `q` (JPEG quality)
+            # is accepted on current versions; fall back if an older one differs.
+            try:
+                encoder = JpegEncoder(q=self.quality)
+            except TypeError:
+                encoder = JpegEncoder()
+            self._picam2.start_recording(encoder, FileOutput(self._buffer))
             logger.info("PiCamera started (%dx%d@%d)", self.width, self.height, self.fps)
         except Exception as exc:  # noqa: BLE001 - fall back to synthetic
             logger.warning("PiCamera hardware start failed (%s); using synthetic frames", exc)
@@ -110,18 +116,21 @@ class PiCamera:
     # Synthetic generator (off-hardware)
     # ----------------------------------------------------------------- #
     def _run_synthetic(self) -> None:
-        import numpy as np
-        from PIL import Image
+        # Pure Pillow (no numpy) so the Pi node stays minimal — the real capture
+        # path uses picamera2's own encoder and never touches this.
+        from PIL import Image, ImageDraw
 
         tick = 0
         period = 1.0 / self.fps
+        block_w = max(1, self.width // 4)
         while not self._stop.is_set():
-            arr = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-            arr[:, :, 1] = np.linspace(0, 255, self.height, dtype=np.uint8)[:, None]
-            x0 = (tick * 16) % max(1, self.width - self.width // 4)
-            arr[self.height // 4 : self.height * 3 // 4, x0 : x0 + self.width // 4, 0] = 220
+            img = Image.new("RGB", (self.width, self.height), (0, 80, 0))
+            x0 = (tick * 16) % max(1, self.width - block_w)
+            ImageDraw.Draw(img).rectangle(
+                [x0, self.height // 4, x0 + block_w, self.height * 3 // 4], fill=(220, 0, 0)
+            )
             buf = io.BytesIO()
-            Image.fromarray(arr).save(buf, format="JPEG", quality=self.quality)
+            img.save(buf, format="JPEG", quality=self.quality)
             self._buffer.write(buf.getvalue())
             tick += 1
             time.sleep(period)
