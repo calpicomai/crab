@@ -254,12 +254,15 @@ It's the reactive/behavior-tree fallback from the roadmap and the
 ```bash
 # on the Jetson (elevate the robot / clear the area for the first run):
 ROBOT_HOST=10.1.50.13 brain/.venv/bin/python -m brain.wander
-brain/.venv/bin/python -m brain.wander --max-steps 30 --min-cm 25 --turn-deg 45
+brain/.venv/bin/python -m brain.wander --speed 75 --steps 3 --min-cm 25 --turn-deg 45
 brain/.venv/bin/python -m brain.wander --log run.jsonl   # append experience records
 ```
 
-Tunables: `WANDER_MIN_CM` / `WANDER_TURN_DEG` / `WANDER_STEP_DELAY_S` (env) or the
-matching flags. Ultrasonic pins are env-overridable on the Pi
+Tunables (env or matching flags): `WANDER_MIN_CM`, `WANDER_TURN_DEG`,
+`WANDER_SPEED` (gait speed, default 60 — raise toward your stable max), `WANDER_STEPS`
+(steps walked per clear decision, default 2 — more = smoother, less stop-start),
+`WANDER_STEP_DELAY_S`. To find a good speed, sweep a direct call and watch for
+brownout: `curl -XPOST http://<pi>:8000/walk -d '{"steps":4,"speed":80}' -H 'content-type: application/json'`. Ultrasonic pins are env-overridable on the Pi
 (`PICRAWLER_ULTRASONIC_TRIG` / `_ECHO`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`).
 Each step emits an **experience record** (distance + decision + response) — with
 `--log`, as JSONL — the seam the future learning stack consumes. Ctrl+C stops and
