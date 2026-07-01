@@ -110,6 +110,21 @@ lives in `brain/perception/types.py` (brain-internal, **not** `shared/`; only th
 camera path constants are shared) and is the perception half of the
 experience-record seam.
 
+## Autonomy (reactive wander/avoid) & ultrasonic
+
+The **ultrasonic sensor is on the Pi** (`robot/sensors.py:DistanceSensor`, via
+`robot_hat` Ultrasonic, default pins trig=`D2`/echo=`D3`, env-overridable). Its
+reading rides on `RobotStatus.distance_cm` (populated in the server's `/status`
+handler), so the brain gets clearance without a new endpoint. No robot_hat →
+simulate (synthetic clearance).
+
+`brain/wander.py` is the first autonomous behavior and the roadmap's reactive /
+behavior-tree fallback: a model-free loop that reads `distance_cm` and turns away
+when blocked, else steps forward. It's the `read sensors → decide → act` seam the
+Ollama agent loop will plug into (agent decides; wander is the fallback). Each
+step emits an **experience record** (distance + decision + response; JSONL via
+`--log`) — the concrete first use of the experience-record seam.
+
 ## Workflow: staged, STOP between stages
 
 Do NOT build the whole system at once. Each stage must be independently
@@ -117,11 +132,13 @@ runnable, and you STOP after each so the user can test on real hardware.
 
 - **Done:** Scaffold + Stage 1 (movement link); movement-safety (staged stand/
   sit, per-leg diagnostic, home-on-startup); **Perception** (`brain/perception/`:
-  CSI camera + YOLO/NanoOWL fused, loadable/unloadable, HTTP server + test).
-- **Not built yet (roadmap in README):** voice I/O, Ollama agent loop,
-  behavior-tree fallback, the learning stack (episodic memory → skill library →
-  outcome self-tuning → offline fine-tune), spatial mapping/SLAM, and the real
-  custom gait.
+  CSI camera + YOLO/NanoOWL fused, loadable/unloadable, HTTP server + test);
+  **ultrasonic sensor + reactive wander/avoid** (`robot/sensors.py`,
+  `brain/wander.py`).
+- **Not built yet (roadmap in README):** voice I/O, the Ollama agent loop (with
+  the reactive wander as its fallback), the learning stack (episodic memory →
+  skill library → outcome self-tuning → offline fine-tune), spatial mapping/SLAM,
+  and the real custom gait.
 
 ## Ask before assuming
 

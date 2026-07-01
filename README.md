@@ -237,6 +237,35 @@ Pi→MJPEG→Jetson→detect link runs off-hardware. A `PerceptionSnapshot` (see
 `brain/perception/types.py`) is the perception half of the future experience
 record.
 
+### Autonomy: wander + avoid (`brain/wander.py`)
+
+The first autonomous behavior — the robot moves on its own and steers around
+obstacles, no LLM. A reactive loop on the Jetson reads the **forward ultrasonic
+clearance** (from `get_status().distance_cm`, sensed on the Pi via `robot_hat`,
+default pins trig=`D2`/echo=`D3`) and:
+
+- clearance below `WANDER_MIN_CM` (default 20cm) → **turn away** (rotates the
+  same direction until clear; alternates side per obstacle),
+- otherwise → **step forward**.
+
+It's the reactive/behavior-tree fallback from the roadmap and the
+`read sensors → decide → act` seam the Ollama agent loop plugs into next.
+
+```bash
+# on the Jetson (elevate the robot / clear the area for the first run):
+ROBOT_HOST=10.1.50.13 brain/.venv/bin/python -m brain.wander
+brain/.venv/bin/python -m brain.wander --max-steps 30 --min-cm 25 --turn-deg 45
+brain/.venv/bin/python -m brain.wander --log run.jsonl   # append experience records
+```
+
+Tunables: `WANDER_MIN_CM` / `WANDER_TURN_DEG` / `WANDER_STEP_DELAY_S` (env) or the
+matching flags. Ultrasonic pins are env-overridable on the Pi
+(`PICRAWLER_ULTRASONIC_TRIG` / `_ECHO`, disable with `PICRAWLER_ULTRASONIC_ENABLED=0`).
+Each step emits an **experience record** (distance + decision + response) — with
+`--log`, as JSONL — the seam the future learning stack consumes. Ctrl+C stops and
+sits the robot. Runs end-to-end in simulate (`PICRAWLER_SIMULATE=1` on the Pi
+reports a synthetic clearance).
+
 ### Off-hardware dev
 
 Both nodes run on a laptop with no SunFounder hardware: the `GaitEngine`
@@ -307,10 +336,13 @@ standing individually without stalling, `stand` via the server should be stable.
 1. ✅ **Perception** — YOLO + NanoOWL detectors feeding the brain, loadable/
    unloadable, served over HTTP (`brain/perception/`). *Built — see
    [Perception (Jetson)](#perception-jetson).*
-2. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
-3. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
-   abilities exposed as tools that call `RobotClient`.
-4. **Behavior-tree fallback** — deterministic behavior when the LLM is unavailable.
+2. ✅ **Reactive autonomy** — ultrasonic-driven wander + obstacle avoidance
+   (`brain/wander.py`); the model-free `read→decide→act` baseline. *Built — see
+   [Autonomy: wander + avoid](#autonomy-wander--avoid-brainwanderpy).*
+3. **Voice I/O** — wake word + VAD → whisper.cpp / faster-whisper STT; Piper TTS.
+4. **Ollama tool-calling agent loop** — Qwen-family ~3B instruct model; robot
+   abilities exposed as tools that call `RobotClient`; falls back to the reactive
+   wander when the LLM is unavailable/unsure.
 5. **Learning stack** (all local, staged):
    - **Episodic memory** — SQLite / vector store of interactions, people,
      places, commands, and user corrections the LLM retrieves from (foundation).
