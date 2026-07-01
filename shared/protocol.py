@@ -21,8 +21,10 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 # Default gait speed handed to picrawler when a command omits one. picrawler
-# speeds are roughly 0-100 (higher = faster); 80 is a stable default.
-DEFAULT_SPEED: int = 80
+# speeds are roughly 0-100 (higher = faster); 50 is picrawler's own default and
+# is gentler on the shared servo/Pi power rail than a higher value (a faster
+# move draws more instantaneous current — see the brownout notes in the README).
+DEFAULT_SPEED: int = 50
 
 
 class Action(str, Enum):
@@ -33,6 +35,11 @@ class Action(str, Enum):
     STAND = "stand"
     SIT = "sit"
     GET_STATUS = "get_status"
+    # Diagnostic/maintenance op: move ONE leg to the standing pose to isolate a
+    # miscalibrated / mis-wired leg. Only a leg index + speed cross the network;
+    # the Pi owns the coordinate, so the "no low-level control over the network"
+    # constraint still holds.
+    TEST_LEG = "test_leg"
 
 
 # Canonical HTTP path for each action. Both server and client read this map so
@@ -44,7 +51,11 @@ ACTION_PATHS: dict[Action, str] = {
     Action.STAND: "/stand",
     Action.SIT: "/sit",
     Action.GET_STATUS: "/status",
+    Action.TEST_LEG: "/diagnostics/leg",
 }
+
+# Number of legs (each with 3 servos). Bounds the diagnostic leg index.
+LEG_COUNT: int = 4
 
 # Liveness endpoint (not an Action — no robot movement, used by systemd/monitoring).
 HEALTH_PATH: str = "/health"
@@ -87,6 +98,18 @@ class SitCommand(BaseModel):
 
 class GetStatusCommand(BaseModel):
     """Request the current robot status. Carries no parameters."""
+
+
+class TestLegCommand(BaseModel):
+    """Diagnostic: move a single leg to the standing pose, gently.
+
+    Used to isolate a leg that drives to a wrong/extreme position (a stall risks
+    a power brownout). The target coordinate is chosen on the Pi; only the leg
+    index and speed travel over the network.
+    """
+
+    leg: int = Field(..., ge=0, le=LEG_COUNT - 1, description="Leg index 0-3.")
+    speed: int = Field(default=DEFAULT_SPEED, ge=1, le=100, description="Servo speed 1-100.")
 
 
 # --------------------------------------------------------------------------- #
