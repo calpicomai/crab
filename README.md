@@ -170,15 +170,23 @@ LLM+Whisper+Piper — free one on demand):
 - **NanoOWL** — open-vocabulary, text-prompted ("a person", "a red ball"); the
   future agent loop steers it at runtime via `/prompts`.
 
-Install (base subset runs the server + simulate path anywhere; the detectors are
-JetPack-specific — see the comments in the requirements file):
+Install with the helper (do this after `brain/setup.sh`). It installs the pieces
+the **right** way for Jetson — apt OpenCV (has GStreamer, for the CSI camera) and
+Ultralytics — because the plain PyPI `torch`/`opencv-python` wheels are the wrong
+builds (no CUDA, no GStreamer), so they must **not** go in a pip requirements file:
 
 ```bash
 cd ~/crab
-brain/.venv/bin/pip install -r brain/requirements-perception.txt
-# then, per NVIDIA's steps: Jetson torch/torchvision -> ultralytics (YOLO),
-# and transformers + torch2trt + TensorRT + nanoowl + a built encoder engine (NanoOWL).
+bash brain/setup_perception.sh
+# torch is the one JetPack-version-specific piece — install NVIDIA's Jetson wheel,
+# or let the script do it by passing the jetson-ai-lab index:
+TORCH_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 bash brain/setup_perception.sh
 ```
+
+NanoOWL (open-vocabulary) stays manual — it needs `torch2trt` + a built TensorRT
+encoder engine; see `brain/requirements-perception.txt`. The base subset alone
+(`pip install -r brain/requirements-perception.txt`) runs the server + simulate
+path anywhere.
 
 Run the perception server (port 8100) and query it:
 

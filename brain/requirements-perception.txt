@@ -1,9 +1,18 @@
 # Perception (Jetson) dependencies — layered.
 #
-# Install this file's base subset with:
+# EASIEST: run `bash brain/setup_perception.sh` — it installs the base subset
+# below PLUS the Jetson-correct OpenCV (apt, with GStreamer) and Ultralytics, and
+# guides the NVIDIA torch wheel. Prefer it over pip'ing this file by hand.
+#
+# Install this file's base subset alone with:
 #   brain/.venv/bin/pip install -r brain/requirements-perception.txt
-# The base subset alone enables the SERVER, the simulate/dummy path, and the
-# test runner (so you can validate wiring before the heavy models are present).
+# The base subset enables the SERVER, the simulate/dummy path, and the test
+# runner (so you can validate wiring before the heavy models are present).
+#
+# NOTE: torch and opencv are deliberately NOT listed as pip requirements — on
+# Jetson the PyPI wheels are the wrong builds (torch: no CUDA; opencv-python: no
+# GStreamer, so the CSI camera won't open). setup_perception.sh installs the
+# correct ones.
 
 # --- Base (pip-installable anywhere) -----------------------------------------
 fastapi>=0.110
