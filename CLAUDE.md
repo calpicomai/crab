@@ -52,14 +52,16 @@ power-safety measure (all-12-at-once browns out the shared Robot HAT rail).
 
 `walk` dispatches on `config.GAIT_MODE`:
 - **`canned`** (default, proven): picrawler's built-in `do_action('forward')`.
-- **`trot`**: the custom coordinate gait — `_trot_walk` builds a 4-frame diagonal
-  trot (pairs FL+RR / FR+RL alternate) via `crawler.do_step(coords, speed)`,
-  modulating only x (stride) and z (lift) around the stand pose and keeping each
-  leg's neutral `LEG_Y` (x/z semantics are unambiguous: x forward+, z up+). Tune
-  it on hardware with `robot/gait_tune.py` (Pi-local, elevated) and the
-  `PICRAWLER_GAIT_*` env knobs; flip the default to `trot` once dialed in. `turn`
-  is still canned. `walk(steps, speed, mode=...)` takes an optional mode override
-  but the HTTP protocol/`WalkCommand` are unchanged — mode is server-side config.
+- **`custom`**: `_custom_walk` plays picrawler's **real forward keyframes**
+  (`FORWARD_FRAMES`, the exact do_step sequence that translates the body) via
+  `crawler.do_step`, with a tunable **stride scale** (`GAIT_STRIDE_SCALE`) that
+  amplifies each leg's x/y offset from the stand neutral (z/lift untouched);
+  scale 1.0 reproduces the stock step, >1.0 lengthens it. Beware: a v1 that
+  modulated a global +x just danced in place — forward motion here is a per-leg
+  **y-sweep**, so the custom gait is built *from* the proven frames, not invented.
+  Tune on hardware via `robot/gait_tune.py` (Pi-local, elevated) + `PICRAWLER_GAIT_*`,
+  then flip the default. `turn` is still canned. `walk(steps, speed, mode=...)`
+  takes an optional mode override; the HTTP protocol/`WalkCommand` are unchanged.
 
 ## Movement safety
 

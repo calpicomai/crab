@@ -269,28 +269,29 @@ Each step emits an **experience record** (distance + decision + response) — wi
 sits the robot. Runs end-to-end in simulate (`PICRAWLER_SIMULATE=1` on the Pi
 reports a synthetic clearance).
 
-### Custom trot gait (experimental, tune on hardware)
+### Custom gait (experimental, tune on hardware)
 
 `walk` picks its gait from `PICRAWLER_GAIT_MODE` on the Pi:
 
 - **`canned`** (default) — picrawler's built-in `do_action('forward')`. Proven; used
   by everything today.
-- **`trot`** — a custom coordinate gait (`crawler.do_step`) where the diagonal leg
-  pairs (FL+RR / FR+RL) alternate for a smoother, faster stride. **Tune it on the
-  robot before making it the default** — feel depends on stride/lift/reach, which
-  can't be judged off-hardware.
+- **`custom`** — plays picrawler's **real forward keyframes** via `crawler.do_step`
+  with a tunable **stride scale**. At scale 1.0 it's the stock step (it truly walks);
+  raise the scale for a longer stride. (A first attempt that modulated a global +x
+  axis just "danced" in place — forward motion on this robot is a per-leg y-sweep,
+  so the custom gait is built *from* the proven frames rather than invented.)
 
 Tune it (Pi-local, robot **elevated**, start slow):
 
 ```bash
-robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 40
-PICRAWLER_GAIT_STRIDE=24 PICRAWLER_GAIT_LIFT_Z=-30 \
-  robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 60
+robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 40           # scale 1.0 = stock step
+PICRAWLER_GAIT_STRIDE_SCALE=1.4 robot/.venv/bin/python -m robot.gait_tune --cycles 3 --speed 60
 ```
 
-Knobs: `PICRAWLER_GAIT_X_NEUTRAL` / `PICRAWLER_GAIT_STRIDE` / `PICRAWLER_GAIT_LIFT_Z`
-/ `PICRAWLER_GAIT_DOWN_Z`. Once it looks smooth and stable, run the server with
-`PICRAWLER_GAIT_MODE=trot` and `walk` (and wander) use it — no protocol/client
+Then set it on the floor and confirm it moves forward. Knob:
+`PICRAWLER_GAIT_STRIDE_SCALE` (stride length; push up until it's the longest step
+that stays stable). Once dialed, run the server with `PICRAWLER_GAIT_MODE=custom`
+(+ your `PICRAWLER_GAIT_STRIDE_SCALE`) and `walk`/wander use it — no protocol/client
 change. `turn` stays canned for now.
 
 ### Off-hardware dev

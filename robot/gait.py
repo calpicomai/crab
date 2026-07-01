@@ -50,14 +50,21 @@ SERVO_COUNT = 12  # 4 legs x 3 joints
 STAND_COORD: list[list[int]] = [[45, 45, -50], [45, 0, -50], [45, 0, -50], [45, 45, -50]]
 SIT_COORD: list[list[int]] = [[45, 45, -30], [70, 0, -30], [70, 0, -30], [45, 45, -30]]
 
-# Per-leg lateral (y) neutral, taken from the stand pose above. The custom trot
-# keeps each leg's y fixed and only modulates x (stride) and z (lift) — the axes
-# whose meaning is unambiguous across legs (x forward+, z up+).
-LEG_Y: list[int] = [45, 0, 0, 45]
-# Trot diagonals for leg order 0=FL, 1=FR, 2=RL, 3=RR: FL+RR swing while FR+RL
-# support, then swap — the alternating diagonal pairs that make a trot.
-TROT_DIAGONAL_A: tuple[int, int] = (0, 3)  # front-left + rear-right
-TROT_DIAGONAL_B: tuple[int, int] = (1, 2)  # front-right + rear-left
+# picrawler's built-in forward gait, as its exact do_step keyframes (leg order
+# 0=FL,1=FR,2=RL,3=RR). This is the KNOWN-GOOD coordinate sequence that actually
+# translates the body forward — the custom gait plays these (optionally with a
+# longer stride) rather than inventing coordinates. A v1 attempt that modulated x
+# uniformly just "danced" in place: forward motion here lives in the per-leg
+# y-sweep + z-lift, not a global +x, because the legs sit at rotated corners.
+FORWARD_FRAMES: list[list[list[int]]] = [
+    [[45, 45, -50], [70, 0, -30], [45, 0, -50], [45, 45, -50]],
+    [[45, 45, -50], [45, 90, -30], [45, 0, -50], [45, 45, -50]],
+    [[45, 45, -50], [45, 90, -50], [45, 0, -50], [45, 45, -50]],
+    [[45, 0, -50], [45, 45, -50], [45, 45, -50], [45, 90, -50]],
+    [[45, 0, -50], [45, 45, -50], [45, 45, -50], [45, 90, -30]],
+    [[45, 0, -50], [45, 45, -50], [45, 45, -50], [70, 0, -30]],
+    [[45, 0, -50], [45, 45, -50], [45, 45, -50], [45, 0, -50]],
+]
 
 
 class GaitEngine:
@@ -125,38 +132,25 @@ class GaitEngine:
             return
         self._crawler.do_step(coords, speed)  # pragma: no cover - hardware
 
-    def _trot_frames(self) -> list[list[list[int]]]:
-        """Build one forward diagonal-trot cycle as four coordinate frames.
+    @staticmethod
+    def _scaled_frame(frame: list[list[int]], scale: float) -> list[list[int]]:
+        """Amplify a frame's stride: scale each leg's x/y offset from the stand
+        neutral by `scale` (z, the lift/plant, is left as-is). scale=1.0 reproduces
+        picrawler's exact frame (proven to walk); >1.0 lengthens the step."""
+        out = []
+        for i in range(LEG_COUNT):
+            nx, ny, _nz = STAND_COORD[i]
+            x, y, z = frame[i]
+            out.append([round(nx + (x - nx) * scale), round(ny + (y - ny) * scale), z])
+        return out
 
-        Diagonal A (FL+RR) and B (FR+RL) alternate: one pair swings forward through
-        the air (foot lifted, x moves to `fwd`) while the other stays planted and
-        drags the body forward (x moves to `back`), then they swap. Only x/z are
-        modulated; each leg keeps its neutral y (LEG_Y).
-        """
-        xn, stride = config.GAIT_X_NEUTRAL, config.GAIT_STRIDE
-        fwd, back = xn + stride // 2, xn - stride // 2
-        up, down = config.GAIT_LIFT_Z, config.GAIT_DOWN_Z
-
-        def frame(a_x: int, a_z: int, b_x: int, b_z: int) -> list[list[int]]:
-            coords = [[0, 0, 0] for _ in range(LEG_COUNT)]
-            for i in TROT_DIAGONAL_A:
-                coords[i] = [a_x, LEG_Y[i], a_z]
-            for i in TROT_DIAGONAL_B:
-                coords[i] = [b_x, LEG_Y[i], b_z]
-            return coords
-
-        return [
-            frame(fwd, up, back, down),    # A swings forward (lifted); B stance back
-            frame(fwd, down, back, down),  # A plants forward
-            frame(back, down, fwd, up),    # A drags body back; B swings forward (lifted)
-            frame(back, down, fwd, down),  # B plants forward
-        ]
-
-    def _trot_walk(self, steps: int, speed: int) -> None:
-        """Custom coordinate trot. Enters from a stand, then cycles the frames."""
+    def _custom_walk(self, steps: int, speed: int) -> None:
+        """Custom coordinate gait: play picrawler's forward keyframes via do_step,
+        with a tunable stride scale. Enters from a stand so the first frame doesn't jerk."""
         if self._pose != Pose.STANDING:
-            self.stand()  # staged, safe entry so the first frame doesn't jerk
-        frames = self._trot_frames()
+            self.stand()  # staged, safe entry
+        scale = config.GAIT_STRIDE_SCALE
+        frames = [self._scaled_frame(f, scale) for f in FORWARD_FRAMES]
         for _ in range(max(0, steps)):
             for coords in frames:
                 self._do_step(coords, speed)
@@ -181,14 +175,14 @@ class GaitEngine:
             self._is_moving = False
 
     def walk(self, steps: int, speed: int = DEFAULT_SPEED, mode: str | None = None) -> None:
-        # mode: "canned" (picrawler do_action) or "trot" (custom do_step gait).
-        # Defaults to config.GAIT_MODE; the tuning tool passes mode="trot" explicitly.
+        # mode: "canned" (picrawler do_action) or "custom" (coordinate do_step gait).
+        # Defaults to config.GAIT_MODE; the tuning tool passes mode="custom" explicitly.
         # Network protocol is unchanged — WalkCommand carries no mode.
         mode = (mode or config.GAIT_MODE).lower()
         self._is_moving = True
         try:
-            if mode == "trot":
-                self._trot_walk(steps, speed)
+            if mode == "custom":
+                self._custom_walk(steps, speed)
             else:
                 for _ in range(max(0, steps)):
                     self._do_action("forward", 1, speed)
