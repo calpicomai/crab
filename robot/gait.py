@@ -50,6 +50,15 @@ SERVO_COUNT = 12  # 4 legs x 3 joints
 STAND_COORD: list[list[int]] = [[45, 45, -50], [45, 0, -50], [45, 0, -50], [45, 45, -50]]
 SIT_COORD: list[list[int]] = [[45, 45, -30], [70, 0, -30], [70, 0, -30], [45, 45, -30]]
 
+# Per-leg lateral (y) neutral, taken from the stand pose above. The custom trot
+# keeps each leg's y fixed and only modulates x (stride) and z (lift) — the axes
+# whose meaning is unambiguous across legs (x forward+, z up+).
+LEG_Y: list[int] = [45, 0, 0, 45]
+# Trot diagonals for leg order 0=FL, 1=FR, 2=RL, 3=RR: FL+RR swing while FR+RL
+# support, then swap — the alternating diagonal pairs that make a trot.
+TROT_DIAGONAL_A: tuple[int, int] = (0, 3)  # front-left + rear-right
+TROT_DIAGONAL_B: tuple[int, int] = (1, 2)  # front-right + rear-left
+
 
 class GaitEngine:
     """High-level robot abilities. Real-time timing lives entirely here."""
@@ -105,6 +114,53 @@ class GaitEngine:
             if leg < LEG_COUNT - 1:
                 time.sleep(config.LEG_SETTLE_S)
 
+    def _do_step(self, coords: list[list[int]], speed: int) -> None:
+        """Move all four legs to a coordinate frame at once, or log it (simulate).
+
+        This is the primitive of the custom coordinate gait. Out-of-range coords
+        are clamped by picrawler (israise defaults False).
+        """
+        if self.simulate or self._crawler is None:
+            logger.info("[simulate] do_step(%s, speed=%d)", coords, speed)
+            return
+        self._crawler.do_step(coords, speed)  # pragma: no cover - hardware
+
+    def _trot_frames(self) -> list[list[list[int]]]:
+        """Build one forward diagonal-trot cycle as four coordinate frames.
+
+        Diagonal A (FL+RR) and B (FR+RL) alternate: one pair swings forward through
+        the air (foot lifted, x moves to `fwd`) while the other stays planted and
+        drags the body forward (x moves to `back`), then they swap. Only x/z are
+        modulated; each leg keeps its neutral y (LEG_Y).
+        """
+        xn, stride = config.GAIT_X_NEUTRAL, config.GAIT_STRIDE
+        fwd, back = xn + stride // 2, xn - stride // 2
+        up, down = config.GAIT_LIFT_Z, config.GAIT_DOWN_Z
+
+        def frame(a_x: int, a_z: int, b_x: int, b_z: int) -> list[list[int]]:
+            coords = [[0, 0, 0] for _ in range(LEG_COUNT)]
+            for i in TROT_DIAGONAL_A:
+                coords[i] = [a_x, LEG_Y[i], a_z]
+            for i in TROT_DIAGONAL_B:
+                coords[i] = [b_x, LEG_Y[i], b_z]
+            return coords
+
+        return [
+            frame(fwd, up, back, down),    # A swings forward (lifted); B stance back
+            frame(fwd, down, back, down),  # A plants forward
+            frame(back, down, fwd, up),    # A drags body back; B swings forward (lifted)
+            frame(back, down, fwd, down),  # B plants forward
+        ]
+
+    def _trot_walk(self, steps: int, speed: int) -> None:
+        """Custom coordinate trot. Enters from a stand, then cycles the frames."""
+        if self._pose != Pose.STANDING:
+            self.stand()  # staged, safe entry so the first frame doesn't jerk
+        frames = self._trot_frames()
+        for _ in range(max(0, steps)):
+            for coords in frames:
+                self._do_step(coords, speed)
+
     # ----------------------------------------------------------------- #
     # Public abilities (mirror shared.Action). Signatures are the seam.
     # ----------------------------------------------------------------- #
@@ -124,11 +180,18 @@ class GaitEngine:
         finally:
             self._is_moving = False
 
-    def walk(self, steps: int, speed: int = DEFAULT_SPEED) -> None:
+    def walk(self, steps: int, speed: int = DEFAULT_SPEED, mode: str | None = None) -> None:
+        # mode: "canned" (picrawler do_action) or "trot" (custom do_step gait).
+        # Defaults to config.GAIT_MODE; the tuning tool passes mode="trot" explicitly.
+        # Network protocol is unchanged — WalkCommand carries no mode.
+        mode = (mode or config.GAIT_MODE).lower()
         self._is_moving = True
         try:
-            for _ in range(max(0, steps)):
-                self._do_action("forward", 1, speed)
+            if mode == "trot":
+                self._trot_walk(steps, speed)
+            else:
+                for _ in range(max(0, steps)):
+                    self._do_action("forward", 1, speed)
             self._pose = Pose.STANDING
         finally:
             self._is_moving = False
