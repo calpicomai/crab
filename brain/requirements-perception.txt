@@ -18,7 +18,11 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
-numpy>=1.24
+# numpy < 2 on purpose: the JetPack stack (Jetson torch/torchvision, system
+# OpenCV, matplotlib) is compiled against the numpy 1.x ABI. numpy 2 triggers
+# "_ARRAY_API not found" in those C extensions (e.g. ultralytics importing
+# matplotlib). Pinning <2 in the venv shadows any numpy 2 in ~/.local.
+numpy>=1.24,<2
 Pillow>=10.0
 
 # --- JetPack / CUDA-specific — DO NOT plain-pip these; follow NVIDIA's steps ---

@@ -197,14 +197,18 @@ are the wrong builds (torch: no CUDA). NanoOWL stays manual (`torch2trt` + a bui
 TensorRT engine); see `brain/requirements-perception.txt`. The base subset alone
 runs the server + simulate path anywhere.
 
-**JetPack 6.2 torch prerequisites** (the script handles the second automatically):
+**JetPack 6.2 torch prerequisites** (the script handles cuDSS automatically):
 - System CUDA must be installed — `sudo apt-get install -y nvidia-jetpack` —
   else `import torch` fails with `libcudart.so.12: cannot open shared object file`.
 - torch ≥ 2.8 links **cuDSS**, which JetPack 6.2 doesn't ship
-  (`libcudss.so.0: cannot open shared object file`). `setup_perception.sh` detects
-  this and installs `nvidia-cudss-cu12 --no-deps` (no-deps so it doesn't shadow
-  the system CUDA 12.6). If ever needed by hand:
-  `brain/.venv/bin/pip install --no-deps nvidia-cudss-cu12`.
+  (`libcudss.so.0: cannot open shared object file`). `setup_perception.sh`
+  installs `nvidia-cudss-cu12 --no-deps` (no-deps so it doesn't shadow the system
+  CUDA 12.6) **and** registers its lib dir via `/etc/ld.so.conf.d` + `ldconfig`
+  (the wheel alone leaves the `.so` off the loader path). By hand:
+  `pip install --no-deps nvidia-cudss-cu12` then add its dir to `ldconfig`.
+- **numpy must be < 2** (pinned in `requirements-perception.txt`): the JetPack
+  torch/opencv/matplotlib are numpy-1.x builds, so numpy 2 breaks them with
+  `_ARRAY_API not found`. If you have numpy 2 in `~/.local`, the venv pin shadows it.
 
 Run the perception server (port 8100) and query it. It reads the camera from the
 robot at `brain/config.py`'s `BASE_URL` + `/camera/stream` (override with
