@@ -558,6 +558,31 @@ wired to the channel picrawler expects (`PIN_LIST`). Also **fully charge** the
 2×18650 cells — low cells are a common brownout cause. Once every leg reaches
 standing individually without stalling, `stand` via the server should be stable.
 
+**Battery upgrade — go higher-*current*, not higher-*voltage*.** The most
+effective hardware fix for the brownout is cells that don't **sag** under the
+servo current spike. The SunFounder Robot HAT input is **2-cell lithium only:
+6.0 V–8.4 V** via an XH2.54 connector ([SunFounder docs](https://docs.sunfounder.com/projects/robot-hat-v4/en/stable/battery.html)),
+so **stay 2S** — a 3S/11.1 V pack can damage the HAT. When the pack sags below
+~6.0 V under load the HAT cuts out, which is the reset. So swap the stock cells
+for **high-drain 18650s** (more peak current, less sag, and more runtime):
+
+| Cell | Capacity | Continuous current | Notes |
+|---|---|---|---|
+| [Molicel P28A](https://www.18650batterystore.com/products/molicel-p28a) | 2800 mAh | ~35 A | highest real current → least sag; best for the brownout |
+| [Samsung 30Q](https://www.18650batterystore.com/products/samsung-30q-18650-3000mah-15a-battery) | 3000 mAh | ~15 A | most capacity; very common |
+| [Sony/Murata VTC6](https://www.18650batterystore.com/products/sony-vtc6) | 3000 mAh | ~15 A (30 A is a pulse/temp-limited rating, not continuous) | capacity + current balance |
+
+All three are **flat-top, unprotected** — confirm that matches your holder
+(button-top vs flat-top) and that they fully seat. **Buy from a reputable battery
+seller, not the cheapest Amazon listing** — counterfeit/over-rated 18650s ("9900
+mAh!") are rampant; e.g. [18650batterystore.com](https://www.18650batterystore.com/),
+[imrbatteries.com](https://imrbatteries.com/), or [illumn.com](https://illumn.com/)
+(authorized distributors). A high-drain pack plus the staged-motion + reflex
+software above should let you push gait speed back up. For **more runtime** you
+can run a larger **2S** LiPo (still ≤ 8.4 V, matched connector/polarity) but
+**charge it externally** with a 2S balance charger — the HAT's onboard charger is
+sized for 2×18650, and a bigger pack adds weight the servos must carry.
+
 ## Roadmap
 
 1. ✅ **Perception** — YOLO + NanoOWL detectors feeding the brain, loadable/
