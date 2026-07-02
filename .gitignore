@@ -25,6 +25,10 @@ crab.env          # per-rig launcher prefs written by brain/run.sh
 /data/
 perception_out/
 
+# Voice: Piper binary + voice models (downloaded by setup_voice.sh)
+brain/.piper/
+brain/.voices/
+
 # Editor / OS
 .vscode/
 .idea/

@@ -527,9 +527,12 @@ What makes it a pet:
 - **Voice, both ways** — the **mic + speaker live on the Pi**, the STT/TTS compute
   on the Jetson (same split as the camera). It **speaks** its lines with **Piper
   TTS** (`--voice` + `PET_VOICE_MODEL`), synthesized on the Jetson and played on
-  the **Pi's speaker** (`PET_AUDIO_SINK=pi`, via the robot's `/audio/play`). The
-  speaker is the Robot HAT's onboard I2S amp — run SunFounder's `i2samp.sh` once
-  so it's the default ALSA sink (see `brain/setup_voice.sh`). It
+  the **Pi's speaker** (`PET_AUDIO_SINK=pi`, via the robot's `/audio/play`).
+  **`bash brain/setup_voice.sh` now installs Piper + a default voice for you** (and
+  faster-whisper), points `crab.env` at the voice, and `brain/run.sh` puts Piper on
+  PATH — so it talks out loud with no manual model wrangling (`SETUP_PIPER=0` /
+  `PIPER_VOICE=` to skip/override). The speaker is the Robot HAT's onboard I2S amp —
+  run SunFounder's `i2samp.sh` once so it's the default ALSA sink. It
   **listens** for **spoken commands** — the Pi streams its mic (`/audio/stream`),
   the Jetson runs **faster-whisper**, and `brain/pet/commands.py` maps phrases to
   actions (`sit`/`come`/`stay`/`spin`/`good boy`/`go`…) that work even with no VLM;
