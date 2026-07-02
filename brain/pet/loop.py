@@ -39,6 +39,7 @@ from .. import config as brain_config
 from ..client import RobotClient
 from ..costmap import LocalCostmap
 from ..dashboard import Dashboard
+from ..wander import _rotate_to_scan   # reuse the rotate-to-scan sonar sweep
 from ..hearing import build_ears
 from . import commands
 from . import config as pet_config
@@ -375,6 +376,17 @@ def main(argv: list[str] | None = None) -> int:
                 last_target = None
             ctx = WorldModel.context_key(dist, mood.current)
             world_summary = world.summary(ctx)
+
+            # Periodically "look around": sweep the fixed sonar by turning the body so
+            # the costmap (and the dashboard's surroundings map) covers more than the
+            # forward cone. Only when not chasing and the battery's fine; reflex-safe.
+            did_scan = False
+            if (pet_config.PET_SCAN_EVERY and target is None and not low_batt
+                    and tick % pet_config.PET_SCAN_EVERY == 0):
+                print(f"   {identity.name} looks around…")
+                _rotate_to_scan(client, costmap, _speed(mood, low_batt))
+                heading, forward_clear = costmap.best_heading()   # refresh after the sweep
+                did_scan = True
 
             new_thought = thought is not None and tid != last_thought_id
             bias = thought.heading_bias_deg if thought else 0.0
