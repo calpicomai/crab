@@ -578,10 +578,24 @@ seller, not the cheapest Amazon listing** — counterfeit/over-rated 18650s ("99
 mAh!") are rampant; e.g. [18650batterystore.com](https://www.18650batterystore.com/),
 [imrbatteries.com](https://imrbatteries.com/), or [illumn.com](https://illumn.com/)
 (authorized distributors). A high-drain pack plus the staged-motion + reflex
-software above should let you push gait speed back up. For **more runtime** you
-can run a larger **2S** LiPo (still ≤ 8.4 V, matched connector/polarity) but
-**charge it externally** with a 2S balance charger — the HAT's onboard charger is
-sized for 2×18650, and a bigger pack adds weight the servos must carry.
+software above should let you push gait speed back up.
+
+**About a 2S LiPo (not plug-and-play).** Voltage-wise a 2S LiPo is fine (≤ 8.4 V),
+but the HAT's power input is a **JST-XH 2.54 mm 3-pin** connector wired
+**Negative / cell-midpoint / Positive** — the middle pin is the junction between
+the two cells, which the HAT uses to balance/charge them
+([pinout](https://docs.sunfounder.com/projects/pipower5/en/latest/pipower_hat.html),
+[PiCrawler 3-pin battery](https://docs.sunfounder.com/projects/pi-crawler/en/latest/hardware/cpn_battery.html)).
+A LiPo's **balance lead** matches that connector/pinout but is **thin wire** not
+rated for the servo current (powering through it just re-creates the sag), and
+its **thick main lead** carries the current but is the wrong connector with no
+midpoint. So a LiPo needs a **custom adapter** (main leads → the outer ±pins, the
+balance-lead midpoint → the middle pin) — **verify polarity against the board
+silkscreen** before plugging in — and you must **charge it externally** with a 2S
+balance charger (the onboard charger is tuned for the 2×18650 Li-ion pack). Unless
+you specifically need LiPo capacity, **high-drain 2×18650s in the stock holder are
+far simpler** — they already have the correct 3-pin connector — and a bigger pack
+also adds weight the servos must carry.
 
 ## Roadmap
 
