@@ -578,6 +578,19 @@ and point the test at `--base-url http://localhost:8000`.
   (re-run `brain/setup.sh`); (b) install `cv2` with GStreamer and the Jetson
   `torch` wheel + `ultralytics` — see [Perception (Jetson)](#perception-jetson).
   `brain/setup.sh` prints which of `cv2` / `torch` / `ultralytics` are visible.
+- **NanoOWL engine build fails with `Cuda Runtime (out of memory)`.** The OWL-ViT
+  encoder is large and the Orin's 8 GB is shared CPU+GPU, so the one-time
+  `trtexec` build can exhaust it (watch the "GPU … MiB in use" at CUDA init — a
+  desktop session alone can hold ~3 GB). Free RAM and/or add swap, then re-run
+  `bash brain/setup_perception.sh --nanoowl` (it resumes at just the build):
+  ```bash
+  sudo systemctl isolate multi-user.target          # run headless (stop the desktop)
+  sudo fallocate -l 6G /swapfile && sudo chmod 600 /swapfile
+  sudo mkswap /swapfile && sudo swapon /swapfile    # swapoff when done if you like
+  sudo nvpmodel -m 0 && sudo jetson_clocks           # max clocks (optional)
+  ```
+  NanoOWL is optional — **YOLO already works**, so you can skip this and run the
+  pet on real detections now; NanoOWL only adds thin-pole / open-vocab prompts.
 - **The pet only turns / "spins in circles" and never walks.** The costmap
   deliberately ignores fabricated perception (a `simulate:true` snapshot and any
   `source:"dummy"` detection), so this is no longer caused by the `DummyBackend`'s

@@ -185,10 +185,27 @@ MSG
         if [ -f "$engine" ]; then
             echo "NanoOWL engine already present: $engine"
         elif "$PY" -c "import nanoowl, torch2trt" 2>/dev/null; then
+            command -v free >/dev/null 2>&1 && echo "  memory before build: $(free -h | awk '/^Mem:/{print $7" free of "$2}'), $(free -h | awk '/^Swap:/{print $2" swap"}')"
             echo "Building NanoOWL image-encoder engine -> $engine (this takes a few minutes) ..."
-            ( cd "$REPO_ROOT" && "$PY" -m nanoowl.build_image_encoder_engine "$engine" ) \
-                && echo "  built $engine" \
-                || echo "  WARNING: engine build failed — see the error above."
+            if ( cd "$REPO_ROOT" && "$PY" -m nanoowl.build_image_encoder_engine "$engine" ); then
+                echo "  built $engine"
+            else
+                cat <<MSG
+  WARNING: engine build failed. On the 8GB Orin this is almost always the
+  TensorRT build running OUT OF MEMORY ("Cuda Runtime (out of memory)" above) —
+  the OWL-ViT encoder is big and the 8GB is shared CPU+GPU. Fixes (then re-run
+  'bash brain/setup_perception.sh --nanoowl' — it resumes at just this build):
+    * Free RAM: stop the perception server / pet / VLM, close the browser, and
+      ideally run headless (no desktop):  sudo systemctl isolate multi-user.target
+    * Add swap for the one-time build (a spike, not steady use):
+        sudo fallocate -l 6G /swapfile && sudo chmod 600 /swapfile
+        sudo mkswap /swapfile && sudo swapon /swapfile
+        # (swapoff /swapfile when the build is done, if you don't want to keep it)
+    * Max clocks can help throughput:  sudo nvpmodel -m 0 && sudo jetson_clocks
+  NanoOWL is OPTIONAL — YOLO already works, so you can skip this and still run the
+  pet on real detections (NanoOWL only adds thin-pole / open-vocab prompts).
+MSG
+            fi
         else
             echo "  torch2trt/nanoowl still not importable after install — see the warnings above."
         fi
