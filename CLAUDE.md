@@ -91,6 +91,20 @@ auto-enables `simulate`: it logs the intended action and returns success, so the
 whole robot↔brain link runs off-hardware. Force it anywhere with
 `PICRAWLER_SIMULATE=1`. `RobotStatus.simulate` reports which mode is active.
 
+**Whole-robot sim world (`robot/simworld.py`).** That default simulate is shallow
+(flat 80 cm sonar, unrelated camera). Opt in with `PICRAWLER_SIM_WORLD=1` to back
+the gait/sonar/camera with a 2D `SimWorld` (pose + obstacles): walk/turn move a
+virtual robot, the sonar **ray-casts** real clearances, the camera renders a
+first-person view, so the whole brain runs against a real environment. A live
+**dashboard** is served at `/sim` (top-down map + camera + costmap + the pet's
+mood/gesture/character/speech), fed by brain telemetry pushed via `POST /sim/brain`
+(`brain/dashboard.py`, enabled with `--dashboard`); it's interactive (click to
+drop obstacles, pause/reset/scenario). The `simblob` perception backend detects
+the rendered obstacle boxes for the camera→costmap path. It's **kinematic /
+behavior-level** (idealized odometry, no servo physics — a physics/URDF sim is a
+far-later option). The `/sim*` endpoints are **dev-only**, NOT part of the
+robot↔brain command protocol in `shared/`.
+
 ## Perception (camera on the Pi, detection on the Jetson)
 
 The **camera is on the robot (Pi)** — the Pi 4B can't run the detectors, so it

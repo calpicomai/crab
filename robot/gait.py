@@ -83,6 +83,9 @@ class GaitEngine:
         # on-robot safety stop so a blocking stride can't blindly ram an obstacle.
         self.clearance_fn: Callable[[], float | None] | None = None
         self._reflex_stopped: bool = False
+        # Optional 2D sim world (robot/simworld.py). When set (simulate + SIM_WORLD),
+        # walk/turn move the virtual robot so the whole stack runs off-hardware.
+        self.world = None
 
         if self.simulate:
             self._crawler = None
@@ -177,6 +180,8 @@ class GaitEngine:
                     self._reflex_stopped = True
                     return
                 self._do_step(coords, speed)
+            if self.world is not None:
+                self.world.advance(config.SIM_STRIDE_CM)
 
     # ----------------------------------------------------------------- #
     # Public abilities (mirror shared.Action). Signatures are the seam.
@@ -221,6 +226,8 @@ class GaitEngine:
                         self._reflex_stopped = True
                         break
                     self._do_action("forward", 1, speed)
+                    if self.world is not None:
+                        self.world.advance(config.SIM_STRIDE_CM)
             self._pose = Pose.STANDING
         finally:
             self._is_moving = False
@@ -238,6 +245,8 @@ class GaitEngine:
         self._is_moving = True
         try:
             self._do_action(action, 1, speed)
+            if self.world is not None:
+                self.world.rotate(degrees)
             self._pose = Pose.STANDING
         finally:
             self._is_moving = False

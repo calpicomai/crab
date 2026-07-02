@@ -44,6 +44,7 @@ from .identity import PetIdentity
 from .memory import MemoryStore
 from .mood import Mood
 from .voice import Voice
+from ..dashboard import Dashboard
 
 # Short canned exclamations the body "says" on a mood change when there's no LLM
 # mind narrating — so a voice-enabled pet still barks/whines on its own.
@@ -136,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-llm", action="store_true", help="No mind at all — pure reactive + mood + memory.")
     parser.add_argument("--no-camera", action="store_true", help="Don't fuse the perception camera into the costmap.")
     parser.add_argument("--no-emote", action="store_true", help="Disable dog-like expressive gestures.")
+    parser.add_argument("--dashboard", action="store_true", help="Push telemetry to the robot's /sim dashboard.")
     parser.add_argument("--voice", action="store_true", help="Speak aloud via Piper TTS (needs piper + a model).")
     parser.add_argument("--no-voice", action="store_true", help="Force voice off.")
     parser.add_argument("--memory-db", default=pet_config.PET_MEMORY_DB, help="Episodic memory SQLite path.")
@@ -161,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     perc = httpx.Client(base_url=args.perception_url.rstrip("/")) if use_camera else None
     log_fh = open(args.log, "a") if args.log else None
+    dash = Dashboard(client.base_url, args.dashboard)
     reflex_cm = pet_config.PET_REFLEX_CM
     turn_cap = brain_config.WANDER_TURN_DEG
 
@@ -288,6 +291,16 @@ def main(argv: list[str] | None = None) -> int:
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()
+            if dash.enabled:
+                dash.push({
+                    "name": identity.name, "mode": "canned" if simulate else "llm",
+                    "mood": m, "gesture": gesture, "character": identity.character,
+                    "memory": memory.count(), "tick": tick, "action": action,
+                    "heading": heading, "forward_clear": forward_clear,
+                    "reflex": bool(resp.status and resp.status.reflex_stopped),
+                    "say": thought.say if thought else None,
+                    "costmap": costmap.snapshot(),
+                })
     except KeyboardInterrupt:
         print(f"\n{identity.name} is tuckered out. Stopping.")
     except httpx.HTTPError as exc:

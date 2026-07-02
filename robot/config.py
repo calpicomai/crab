@@ -76,6 +76,18 @@ REFLEX_ENABLED: bool = os.environ.get("PICRAWLER_REFLEX_ENABLED", "1").strip().l
 }
 REFLEX_STOP_CM: float = float(os.environ.get("PICRAWLER_REFLEX_STOP_CM", "15"))
 
+# --- Whole-robot simulator (robot/simworld.py) --------------------------------
+# When simulating (no picrawler, or PICRAWLER_SIMULATE=1), optionally back the
+# gait/sonar/camera with a 2D world so the robot actually moves in a space and
+# the ultrasonic sees real obstacles — off by default so plain simulate behavior
+# is unchanged. Enable with PICRAWLER_SIM_WORLD=1. A live dashboard is served at
+# /sim. See the README "Simulator" section.
+SIM_WORLD: bool = os.environ.get("PICRAWLER_SIM_WORLD", "").strip().lower() in {"1", "true", "yes", "on"}
+# Scenario preset (empty/room/poles/corridor/slalom) or a JSON obstacle file path.
+SIM_SCENARIO: str = os.environ.get("PICRAWLER_SIM_SCENARIO", "poles")
+# Distance (cm) the virtual robot advances per walk gait cycle.
+SIM_STRIDE_CM: float = float(os.environ.get("PICRAWLER_SIM_STRIDE_CM", "6"))
+
 # Pose to gently home into when the server starts, instead of leaving the legs
 # in picrawler's splayed power-on pose. One of "stand", "sit", or "none". Uses
 # the same staged, low-speed motion as the stand/sit commands. "stand" only
