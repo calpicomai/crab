@@ -139,14 +139,27 @@ robot/.venv/bin/python -c "import picrawler, robot_hat; print('hardware libs OK'
 ```
 </details>
 
-Autostart with systemd (see the header of the unit file for full steps):
+Autostart with systemd (see the header of each unit file for full steps). Flip the
+power on and the whole thing comes up — no laptop:
 
 ```bash
+# On the Pi — the robot command server:
 sudo cp robot/systemd/picrawler-server.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now picrawler-server
+sudo systemctl daemon-reload && sudo systemctl enable --now picrawler-server
 curl localhost:8000/health
+
+# On the Jetson — full power at boot + the pet (run `bash brain/run.sh` once first so
+# crab.env exists; edit User/paths in the pet unit to match your username):
+sudo cp brain/systemd/jetson-max-power.service brain/systemd/picrawler-pet.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now jetson-max-power picrawler-pet
+journalctl -u picrawler-pet -f
 ```
+
+**Full power (Jetson).** The VLM + perception want the whole power budget, which is
+NOT on by default. `brain/setup_agent.sh` sets it (`nvpmodel -m 0` MAXN), the
+`jetson-max-power` boot unit re-pins clocks each boot, and `brain/run.sh` warns if the
+mode is throttled. By hand: `sudo nvpmodel -m 0 && sudo jetson_clocks`.
 
 **Calibration** is already handled by the SunFounder calibration tool; those
 offsets are stored in picrawler/robot_hat's own config on the Pi and applied
