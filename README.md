@@ -62,7 +62,41 @@ segment (the movement link).
 
 See `CLAUDE.md` for the full conventions.
 
-## Setup & run
+## Quickstart — run it on the hardware
+
+The easy path: one setup per node (once), then a single `run.sh` on each. You
+don't memorize flags — `brain/run.sh` asks you a few questions the first time,
+saves them to `crab.env`, and then just shows a menu.
+
+```bash
+# 1. one-time, on each machine (builds the venv + installs deps):
+bash robot/setup.sh          # on the Pi
+bash brain/setup.sh          # on the Jetson  (+ setup_perception.sh for YOLO/NanoOWL,
+                             #                  + setup_agent.sh for a VLM voice)
+
+# 2. SAFETY: charge the 2S pack and ELEVATE the robot (legs clear) for the first run.
+
+# 3. on the Pi — start the robot:
+bash robot/run.sh
+
+# 4. on the Jetson — start the brain (first run asks a few Qs, then a menu):
+bash brain/run.sh            # pick: pet / wander / agent / check
+bash brain/run.sh check      # readiness checklist, moves nothing
+```
+
+`brain/run.sh` finds the robot, starts the perception server for you, uses a VLM
+if you configured one (else the pet's canned voice), and picks sensible flags
+from your saved answers. Re-run the questions any time with
+`bash brain/run.sh reconfigure`. Power users can skip the menu:
+`bash brain/run.sh pet -- --goal "explore the kitchen"`.
+
+**No hardware?** Try the whole thing in the simulator with one command:
+
+```bash
+bash sim.sh                  # then open http://localhost:8000/sim
+```
+
+## Setup & run (details)
 
 Each node uses its own virtual environment (see `CLAUDE.md`). A setup script per
 node creates the venv and installs the dependencies in one step — use it rather
