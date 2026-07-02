@@ -26,6 +26,7 @@ class PetThought:
     gesture: str
     mood_hint: str | None
     observation: str
+    target: str | None = None   # a label the mind wants to go to (the body steers to it)
 
 
 def _extract_json(text: str) -> dict | None:
@@ -47,12 +48,15 @@ def _thought_from_dict(d: dict, fallback_say: str) -> PetThought:
     except (TypeError, ValueError):
         bias = 0.0
     bias = max(-60.0, min(60.0, bias))
+    target = d.get("target")
+    target = target.strip().lower() if isinstance(target, str) and target.strip() else None
     return PetThought(
         say=(d.get("say") or fallback_say or "").strip() or fallback_say,
         heading_bias_deg=bias,
         gesture=(d.get("gesture") or "none").strip().lower(),
         mood_hint=(d.get("mood_hint") or None),
         observation=(d.get("observation") or "").strip(),
+        target=target,
     )
 
 
@@ -75,11 +79,18 @@ class MockPetBrain:
         self._rng = random.Random(1234)
         self._flip = 1.0
 
-    def reflect(self, image_b64, status, identity, mood, memory_summary) -> PetThought:  # noqa: ANN001
+    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:  # noqa: ANN001
         heard = status.get("heard")
         if heard:
             return PetThought(f"{identity.name}: did you say '{heard}'?", self._rng.uniform(-8, 8),
                               "tilt", "curious", f"human said '{heard}'")
+        # Something worth chasing is in view — get excited and go (the body steers
+        # toward its bearing; the mind just reacts in character and names the target).
+        tgt = status.get("target")
+        if tgt:
+            line = "a cat! let's go!" if "cat" in tgt else f"a {tgt}! come here!"
+            return PetThought(f"{identity.name}: {line}", 0.0, "perk", "excited",
+                              f"a {tgt}", target=tgt)
         dist = status.get("distance_cm")
         blocked = status.get("reflex_stopped") or (isinstance(dist, (int, float)) and dist < 40)
         line = self._rng.choice(_CANNED.get(mood, _CANNED["curious"]))
@@ -120,10 +131,13 @@ class PetBrain:
         heard = status.get("heard")
         if heard:
             extra += f" Your human just said to you: \"{heard}\" — react to it."
+        tgt = status.get("target")
+        if tgt:
+            extra += f" You can see a {tgt} you could chase!"
         return f"pose={status.get('pose', '?')}, forward clearance={dist_s}{extra}"
 
-    def reflect(self, image_b64, status, identity, mood, memory_summary) -> PetThought:  # noqa: ANN001
-        system = identity.persona_prompt(mood, memory_summary)
+    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:  # noqa: ANN001
+        system = identity.persona_prompt(mood, memory_summary, world_summary)
         user: list[dict] = [{"type": "text", "text": self._status_text(status)}]
         if llm_config.LLM_MULTIMODAL and image_b64:
             user.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}})

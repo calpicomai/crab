@@ -118,7 +118,7 @@ class PetIdentity:
     def top_seen(self, n: int = 5) -> list[str]:
         return [k for k, _ in sorted(self.tallies.items(), key=lambda kv: -kv[1])[:n]]
 
-    def persona_prompt(self, mood: str, memory_summary: str) -> str:
+    def persona_prompt(self, mood: str, memory_summary: str, world_summary: str = "") -> str:
         """The in-character system prompt: who the pet is, plus how to respond."""
         familiar = ", ".join(self.top_seen()) or "nothing in particular yet"
         return (
@@ -129,15 +129,18 @@ class PetIdentity:
             f"Who you've become so far: {self.character}\n"
             f"Things you've seen a lot: {familiar}.\n"
             f"Recent memories:\n{memory_summary}\n"
+            f"What you know about where you are right now: {world_summary or 'still mapping it out'}.\n"
             f"Right now you feel: {mood}.\n\n"
             "Each turn you see one camera image and a status line (pose, forward "
-            "clearance in cm). React like a pet: notice things, remember when you've "
-            "seen something before, and let your mood and curiosity guide you. A "
-            "fast reflex keeps you safe, so you only choose intent, never servo "
-            "detail. Respond ONLY with a JSON object: {\"say\": a short first-person "
-            "remark in your own voice, \"heading_bias_deg\": -60..60 (negative=left, "
-            "positive=right; which way you want to drift), \"gesture\": one of "
-            "\"none\"|\"wiggle\"|\"tilt\"|\"approach\"|\"backaway\"|\"rest\", "
-            "\"mood_hint\": one word for how you feel now, \"observation\": a few "
-            "words on what you see to remember}."
+            "clearance in cm, and anything you can chase). React like a pet: notice "
+            "things, remember when you've seen something before, get excited to chase "
+            "a cat or dog, and let your mood and curiosity guide you. A fast reflex "
+            "keeps you safe, so you only choose intent, never servo detail. Respond "
+            "ONLY with a JSON object: {\"say\": a short first-person remark in your "
+            "own voice, \"heading_bias_deg\": -60..60 (negative=left, positive=right; "
+            "which way you want to drift), \"gesture\": one of \"none\"|\"wiggle\"|"
+            "\"tilt\"|\"perk\"|\"pounce\"|\"sniff\"|\"approach\"|\"backaway\"|\"rest\", "
+            "\"target\": the label of something you can see and want to go to (e.g. "
+            "\"cat\"), or null, \"mood_hint\": one word for how you feel now, "
+            "\"observation\": a few words on what you see to remember}."
         )

@@ -48,6 +48,7 @@ from .identity import PetIdentity
 from .memory import MemoryStore
 from .mood import Mood
 from .voice import Voice
+from .worldmodel import WorldModel
 
 # Short canned exclamations the body "says" on a mood change when there's no LLM
 # mind narrating — so a voice-enabled pet still barks/whines on its own.
@@ -72,7 +73,30 @@ class _Shared:
         self.status = {"pose": "?", "distance_cm": None, "reflex_stopped": False}
         self.mood_name = "curious"   # body publishes; mind reads for its prompt
         self.heard: str | None = None  # last spoken utterance; mind reads + clears
+        self.world_summary = ""      # body publishes; mind folds into its prompt
         self.stop = False
+
+
+def _stride_count(mood: Mood, chasing: bool) -> int:
+    """How many strides to commit this decision — scaled by the mood's eagerness
+    (explore_bias), maxed out when chasing. Longer bursts read as purposeful."""
+    lo, hi = pet_config.PET_WALK_STEPS_MIN, pet_config.PET_WALK_STEPS_MAX
+    eb = 1.0 if chasing else mood.params().explore_bias
+    return max(lo, min(hi, int(round(lo + eb * (hi - lo)))))
+
+
+def _push_interest_prompts(perc: "httpx.Client | None", labels: list[str]) -> None:
+    """Best-effort: steer NanoOWL (if loaded) at what the pet finds interesting, so
+    open-vocab detection can flag things beyond YOLO's COCO classes. No-op otherwise."""
+    if perc is None or not labels:
+        return
+    try:
+        health = perc.get("/health", timeout=2.0).json() or {}
+        if "nanoowl" in (health.get("backends") or []):
+            perc.post("/prompts", json={"prompts": labels}, timeout=3.0)
+            print(f"   perception: steering NanoOWL at {', '.join(labels)}")
+    except Exception:  # noqa: BLE001 - perception optional
+        pass
 
 
 def _status_dict(client: RobotClient) -> dict:
@@ -122,11 +146,12 @@ def _mind_thread(shared: _Shared, brain, identity: PetIdentity, memory: MemorySt
         with shared.lock:
             status = dict(shared.status)
             mood_name = shared.mood_name
+            world_summary = shared.world_summary
             status["heard"] = shared.heard   # let the mind react to speech in character
             shared.heard = None              # consume it
         image = _grab_frame_b64(frame_url)
         try:
-            thought = brain.reflect(image, status, identity, mood_name, memory.summary())
+            thought = brain.reflect(image, status, identity, mood_name, memory.summary(), world_summary)
         except Exception as exc:  # noqa: BLE001 - LLM hiccup -> stay quiet this beat
             thought = None
             print(f"  ({identity.name}'s mind wandered: {exc})", file=sys.stderr)
@@ -172,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-stt", action="store_true", help="Disable spoken-command listening (Whisper).")
     parser.add_argument("--memory-db", default=pet_config.PET_MEMORY_DB, help="Episodic memory SQLite path.")
     parser.add_argument("--identity-file", default=pet_config.PET_IDENTITY_FILE, help="Identity JSON path.")
+    parser.add_argument("--world-db", default=pet_config.PET_WORLD_DB, help="World-model SQLite path.")
     parser.add_argument("--log", default=None, help="Append per-cycle experience records as JSONL.")
     args = parser.parse_args(argv)
 
@@ -180,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     frame_url = client.base_url.rstrip("/") + CAMERA_FRAME_PATH
     identity = PetIdentity(args.identity_file, name=args.name)
     memory = MemoryStore(args.memory_db)
+    world = WorldModel(args.world_db)
     costmap = LocalCostmap()
     mood = Mood()
     shared = _Shared()
@@ -217,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"   (robot {client.base_url}; mind: {'canned' if simulate else ('off' if args.no_llm else 'LLM')}; "
           f"memories so far: {memory.count()})  Elevate the robot for the first run. Ctrl+C to stop.")
     camera_fused = _probe_perception(perc if use_camera else None)
+    if camera_fused:
+        _push_interest_prompts(perc, pet_config.PET_CHASE_LABELS + pet_config.PET_INTEREST_LABELS)
+    print(f"   world: {world.object_count()} things, {world.place_count()} places known so far.")
     print()
 
     mind = None
@@ -234,6 +264,10 @@ def main(argv: list[str] | None = None) -> int:
     turn_only_streak = 0
     last_thought_id = 0
     prev_mood = mood.current
+    prev_desired = 0.0
+    last_target = None            # a Target we keep pursuing briefly after it leaves view
+    target_lost = 0
+    prev_target_label: str | None = None
     last_heard: str | None = None
     tick = 0
     started = time.monotonic()
@@ -288,40 +322,78 @@ def main(argv: list[str] | None = None) -> int:
 
             costmap.decay()
             costmap.integrate_sonar(dist)
+            snap = None
             if use_camera and perc is not None:
                 try:
-                    snap = perc.get("/snapshot", timeout=1.0)
-                    if snap.status_code == 200:
-                        costmap.integrate_camera(snap.json())
+                    r = perc.get("/snapshot", timeout=1.0)
+                    if r.status_code == 200:
+                        snap = r.json()
+                        costmap.integrate_camera(snap)
                 except Exception:  # noqa: BLE001 - perception optional
-                    pass
+                    snap = None
             heading, forward_clear = costmap.best_heading()
 
-            # The mind's gentle influence: a heading bias + mood hint + a gesture.
+            # World model: learn what's around (objects + a sense of place) and pick
+            # the most interesting thing to GO TO. This label-aware target is what
+            # turns "avoid everything" into "chase the cat".
+            target = None
+            if snap is not None:
+                world.observe(snap, status)
+                target = world.salient_target(snap, min_interest=pet_config.PET_TARGET_MIN_INTEREST)
+            if target is not None:
+                last_target, target_lost = target, 0
+            elif last_target is not None and target_lost < pet_config.PET_TARGET_LOST_TICKS:
+                target, target_lost = last_target, target_lost + 1   # brief "where'd it go?" search
+            else:
+                last_target = None
+            ctx = WorldModel.context_key(dist, mood.current)
+            world_summary = world.summary(ctx)
+
             new_thought = thought is not None and tid != last_thought_id
             bias = thought.heading_bias_deg if thought else 0.0
-            saw_person = bool(thought and "person" in (thought.observation or "").lower())
-            # A fresh in-character observation counts as novelty — keeps a lively
-            # dog engaged instead of getting bored between the slow reflections.
+            saw_person = bool(target and "person" in target.label) or \
+                bool(thought and "person" in (thought.observation or "").lower())
             saw_new = bool(new_thought and thought and thought.observation)
             if new_thought:
                 mood.nudge(thought.mood_hint)
                 last_thought_id = tid
-            target = max(-costmap.fov, min(costmap.fov, heading + bias))
+            chasing = bool(target and target.drive == "chase")
+            new_target = bool(target and prev_target_label != target.label)
+            prev_target_label = target.label if target else None
 
-            want_walk = forward_clear and abs(target) < turn_cap
-            # Anti-spin: if we've only been turning for too long (boxed in, or a
-            # mis-sensing forward sonar), probe forward once anyway — the Pi reflex
-            # aborts the stride if it's truly blocked, so this can't ram anything.
-            antispin_probe = (
-                not want_walk
-                and pet_config.PET_ANTISPIN_TICKS
-                and turn_only_streak >= pet_config.PET_ANTISPIN_TICKS
-            )
+            # Desired heading: go to the target if we have one, else the costmap gap +
+            # the mind's nudge — then EMA-smooth it so steering doesn't jitter.
+            goal = target.bearing_deg if target is not None else (heading + bias)
+            goal = max(-costmap.fov, min(costmap.fov, goal))
+            s = pet_config.PET_HEADING_SMOOTH
+            desired = s * prev_desired + (1.0 - s) * goal
+            prev_desired = desired
 
-            if want_walk or antispin_probe:
-                m = mood.update(moved_forward=not antispin_probe, saw_person=saw_person, saw_new=saw_new)
-                resp = client.walk(1, speed=mood.params().speed, min_clearance_cm=reflex_cm)
+            # Publish for the mind: world summary + what it can chase right now.
+            with shared.lock:
+                shared.world_summary = world_summary
+                shared.status = dict(status, target=(target.label if target else None))
+
+            deadband = pet_config.PET_FORWARD_DEADBAND_DEG
+            # Walk vs turn. With a target: orient until it's roughly ahead, then stride
+            # toward it — trusting the Pi reflex (not the costmap) for safety, so the
+            # cat we're chasing isn't treated as an obstacle to stop for. No target:
+            # the usual gap-follow, with the anti-spin probe as a backstop.
+            if target is not None:
+                do_walk = abs(desired) <= deadband
+                antispin_probe = False
+            else:
+                do_walk = forward_clear and abs(desired) < turn_cap
+                antispin_probe = (
+                    not do_walk and pet_config.PET_ANTISPIN_TICKS
+                    and turn_only_streak >= pet_config.PET_ANTISPIN_TICKS
+                )
+
+            if do_walk or antispin_probe:
+                steps = _stride_count(mood, chasing)
+                m = mood.update(moved_forward=not antispin_probe, saw_person=saw_person,
+                                saw_new=saw_new, chasing=chasing)
+                resp = client.walk(steps, speed=mood.params().speed, min_clearance_cm=reflex_cm)
                 reflex = bool(resp.status and resp.status.reflex_stopped)
                 if reflex:
                     m = mood.update(reflex=True)
@@ -329,40 +401,51 @@ def main(argv: list[str] | None = None) -> int:
                     costmap.integrate_sonar(min(d, reflex_cm) if d is not None else reflex_cm)
                 else:
                     costmap.apply_motion(walked=True)
+                world.record(ctx, "walk", reflex=reflex, progressed=not reflex)
                 commit_ttl = 0
                 turn_only_streak = 0
                 if antispin_probe and reflex:
-                    # A real wall really is ahead — explore the other way next.
-                    commit_dir = -commit_dir if commit_dir else 1.0
+                    commit_dir = -commit_dir if commit_dir else 1.0   # explore the other way next
                     commit_ttl = pet_config.PET_HYSTERESIS_TICKS
-                action = "reflex-stop" if reflex else ("probe" if antispin_probe else "walk")
+                action = "reflex-stop" if reflex else ("chase" if chasing else
+                         ("probe" if antispin_probe else "walk"))
             else:
-                # Turn toward the gap, committing to a side (hysteresis) to avoid rocking.
-                if commit_ttl > 0 and commit_dir != 0.0:
+                # Orient toward the desired heading. When chasing, turn straight at the
+                # target; when wandering, commit to a side (hysteresis) so it doesn't rock.
+                if target is None and commit_ttl > 0 and commit_dir != 0.0:
                     direction = commit_dir
                 else:
-                    direction = math.copysign(1.0, target) if abs(target) > 1e-6 else 1.0
+                    direction = math.copysign(1.0, desired) if abs(desired) > 1e-6 else 1.0
                     commit_dir = direction
                     commit_ttl = pet_config.PET_HYSTERESIS_TICKS
-                turn = direction * min(turn_cap, max(15.0, abs(target) or turn_cap))
-                m = mood.update(blocked=True, saw_person=saw_person, saw_new=saw_new)
+                turn = direction * min(turn_cap, max(6.0, abs(desired) or turn_cap))
+                # Turning to face a target is intent, not fear — don't spook the mood.
+                m = mood.update(blocked=(target is None and not forward_clear),
+                                saw_person=saw_person, saw_new=saw_new, chasing=chasing)
                 resp = client.turn(turn, speed=mood.params().speed)
                 costmap.apply_motion(turn_deg=turn)
                 commit_ttl -= 1
-                turn_only_streak += 1
-                action = f"turn {turn:+.0f}"
+                turn_only_streak = 0 if target is not None else turn_only_streak + 1
+                world.record(ctx, "turn", reflex=False, progressed=False)
+                action = f"{'seek' if target is not None else 'turn'} {turn:+.0f}"
 
-            # Emote like a dog: a big signature move the instant the mood changes,
-            # a smaller fidget sprinkled in otherwise — so it's never just walking.
+            # Emote like a dog — but with intent, not constant twitching: perk up at a
+            # newly-noticed thing, pounce when closing in on a chase, a signature move
+            # on a real mood change, and an idle fidget ONLY when genuinely idle
+            # (bored/sleepy) — so purposeful motion isn't buried under random wiggles.
             gesture = "none"
             mood_changed = m != prev_mood
             if emote:
                 if new_thought and thought and thought.gesture in expressions.GESTURES \
                         and thought.gesture != "none":
-                    gesture = thought.gesture           # the mind asked for a specific move
+                    gesture = thought.gesture              # the mind asked for a specific move
+                elif new_target:
+                    gesture = "perk"                       # notice the new thing (attention)
+                elif chasing and target and target.range_cm < 45 and rng.random() < 0.4:
+                    gesture = "pounce"                     # closing in!
                 elif mood_changed:
-                    gesture = expressions.signature(m, rng)   # react to the new feeling
-                elif forward_clear and rng.random() < pet_config.PET_EMOTE_CHANCE:
+                    gesture = expressions.signature(m, rng)   # react to a real change of feeling
+                elif m in ("bored", "sleepy") and rng.random() < pet_config.PET_EMOTE_CHANCE:
                     idle = expressions.idle(m, rng)
                     gesture = idle if expressions.is_inplace(idle) else "none"  # don't drift while idling
                 if gesture != "none":
@@ -374,17 +457,21 @@ def main(argv: list[str] | None = None) -> int:
                 voice.say(_BARKS[m])
             prev_mood = m
 
+            place = "familiar" if world.place_familiarity > 1 else "new"
             emote_s = f" {gesture}" if gesture != "none" else ""
             dist_s = f"{dist:.0f}cm" if dist is not None else "--"
-            print(f"[{tick:>3}] {action:<12}{emote_s:<9} mood={m:<9} "
-                  f"clear={'y' if forward_clear else 'n'} head={heading:+.0f} "
-                  f"bias={bias:+.0f} dist={dist_s} cam={'y' if camera_fused else 'n'} "
-                  f"-> pose={resp.status.pose.value if resp.status else '?'}")
+            tgt_s = f" ->{target.label}" if target is not None else ""
+            print(f"[{tick:>3}] {action:<11}{tgt_s:<9}{emote_s:<8} mood={m:<9} "
+                  f"clear={'y' if forward_clear else 'n'} want={desired:+.0f} "
+                  f"dist={dist_s} cam={'y' if camera_fused else 'n'} place={place} "
+                  f"-> {resp.status.pose.value if resp.status else '?'}")
             if log_fh:
                 log_fh.write(json.dumps({
                     "tick": tick, "action": action, "gesture": gesture, "mood": m,
-                    "distance_cm": dist, "heading": heading, "bias": bias,
+                    "distance_cm": dist, "heading": heading, "desired": round(desired, 1),
                     "forward_clear": forward_clear, "camera_fused": camera_fused,
+                    "target": target.label if target else None, "chasing": chasing,
+                    "place": place, "place_familiarity": world.place_familiarity,
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()
@@ -398,6 +485,8 @@ def main(argv: list[str] | None = None) -> int:
                     "reflex": bool(resp.status and resp.status.reflex_stopped),
                     "say": thought.say if thought else None,
                     "heard": last_heard,
+                    "target": (f"{target.label} ({target.drive})" if target else None),
+                    "place": place, "world": world_summary,
                     "costmap": costmap.snapshot(),
                 })
     except KeyboardInterrupt:
@@ -418,12 +507,15 @@ def main(argv: list[str] | None = None) -> int:
             pass
         # Capture the farewell stats before closing the DB (the mind thread has
         # joined, so no more writes land after this).
-        farewell = f"{identity.name} curls up. ({memory.count()} memories, {identity.reflections} reflections.)"
+        farewell = (f"{identity.name} curls up. ({memory.count()} memories, "
+                    f"{identity.reflections} reflections, {world.object_count()} things "
+                    f"and {world.place_count()} places known.)")
         if log_fh:
             log_fh.close()
         if perc is not None:
             perc.close()
         memory.close()
+        world.close()
         client.close()
 
     print(farewell)

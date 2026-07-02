@@ -53,16 +53,18 @@ class Mood:
                 self.current = h
 
     def update(self, *, saw_person: bool = False, saw_new: bool = False,
-               blocked: bool = False, reflex: bool = False, moved_forward: bool = False) -> str:
+               blocked: bool = False, reflex: bool = False, moved_forward: bool = False,
+               chasing: bool = False) -> str:
         """Transition from sensed events. Returns the (possibly new) mood.
 
-        Priority: a scare/close call wins, then delight at a person/new thing,
-        then boredom creeps in when nothing happens. Idle long enough -> sleepy.
+        Priority: a scare/close call wins, then the thrill of chasing / seeing a
+        person, then curiosity at something new, then boredom creeps in when nothing
+        happens. Idle long enough -> sleepy.
         """
         if reflex or blocked:
             self.current = "startled" if reflex else "cautious"
             self._idle_ticks = 0
-        elif saw_person:
+        elif chasing or saw_person:
             self.current = "excited"
             self._idle_ticks = 0
         elif saw_new:

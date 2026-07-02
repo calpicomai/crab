@@ -249,6 +249,37 @@ to preserve:
 - Reuses `costmap.py`, the reflex-protected `client`, and `brain/agent` LLM
   backend/config. Works today with `--sim`/`--no-llm`/no-voice (no GPU/model/audio).
 
+## World model (`brain/pet/worldmodel.py`) — intentional behavior + chasing
+
+The substrate that makes the pet feel *intentional* rather than twitchy, grown from
+what it sees + does (SQLite, mirrors `memory.py`'s single-connection pattern; the
+**body thread** is the sole writer — it owns the snapshot each tick — and publishes a
+text `world_summary` into `_Shared` for the mind to read, so the DB is single-thread).
+Three learned parts: **objects** (label/seen/bearing/range/valence — recognition +
+novelty), **places** (a *semantic fingerprint* = the set of visible labels, matched by
+Jaccard — "I know this spot" WITHOUT metric SLAM, which the sensors can't support), and
+**action→outcome** tallies (`record`/`predict`, Laplace-smoothed frequency stats — mild
+foresight, NOT a neural predictor).
+
+- **Targets / "chase cats".** `salient_target(snapshot)` picks the most interesting
+  visible thing, interest = per-label weight (`PET_CHASE_LABELS` e.g. cat/dog stay
+  exciting even when familiar; `PET_INTEREST_LABELS` fade with familiarity → boredom).
+  This is a NEW label-aware channel: detections used to fuse into the costmap **only as
+  obstacles** — now they can also become a goal to steer toward. The body sets a *goal
+  heading* from the target's bearing and, when it's roughly ahead, walks trusting the Pi
+  **reflex** (not the costmap) for safety, so the cat it's chasing isn't treated as an
+  obstacle to stop for. Reflex + sonar still prevent collisions.
+- **Purposeful, de-twitched motion** (the "it just wiggles" fix): multi-stride walks
+  scaled by `mood.explore_bias` (`PET_WALK_STEPS_*`), an **EMA-smoothed** desired heading
+  (`PET_HEADING_SMOOTH`) + a forward **deadband** (`PET_FORWARD_DEADBAND_DEG`) so tiny
+  biases don't cause micro-turns, and a **fidget diet** — idle gestures only when
+  genuinely bored/sleepy; `perk` at a newly-noticed thing, `pounce` when closing in.
+- **LLM-ready.** `worldmodel.summary()` + the current target feed the VLM system prompt
+  (`identity.persona_prompt(mood, memory_summary, world_summary)`), and `PetThought` has a
+  `target` field so a VLM can *choose* what to chase; `MockPetBrain` gets excited about a
+  target too, so **canned mode chases cats** with no model. Honest scope unchanged: this
+  is structured + learned, not a trained world model or literal consciousness.
+
 ## Workflow: staged, STOP between stages
 
 Do NOT build the whole system at once. Each stage must be independently
