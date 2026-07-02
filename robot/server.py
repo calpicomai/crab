@@ -214,8 +214,9 @@ class ControlBody(BaseModel):
 
 @app.get("/sim")
 def sim_dashboard() -> Response:
-    if sim_world is None:
-        return Response(status_code=503, content="sim world disabled (set PICRAWLER_SIM_WORLD=1)")
+    # Served even without the sim world: on the real robot the page degrades to the
+    # brain telemetry pushed to /sim/brain (camera + costmap + pet panels), so you
+    # can watch the live pet at /sim. The top-down map is the only sim-only panel.
     from .sim_view import DASHBOARD_HTML
 
     return HTMLResponse(DASHBOARD_HTML)
@@ -224,7 +225,10 @@ def sim_dashboard() -> Response:
 @app.get("/sim/state")
 def sim_state() -> dict:
     if sim_world is None:
-        return {"enabled": False}
+        # No 2D world (real robot): still hand the dashboard the pushed telemetry
+        # so its camera/costmap/pet panels render; enabled=False tells the page to
+        # skip the top-down map and use the costmap radar instead.
+        return {"enabled": False, "brain": _sim_brain}
     return {"enabled": True, **sim_world.state(), "brain": _sim_brain}
 
 

@@ -36,6 +36,11 @@ DASHBOARD_HTML = r"""
   img{width:100%;border-radius:8px;background:#000;display:block}
   .pill{display:inline-block;padding:2px 8px;border-radius:99px;background:#222a31}
   .hint{color:var(--muted);font-size:11px}
+  /* On the real robot (no 2D sim world) hide the sim-only controls/hints and show
+     the "surroundings radar" hint instead. Toggled by body.no-world in tick(). */
+  .worldoff{display:none}
+  .no-world .worldonly{display:none}
+  .no-world .worldoff{display:inline-block}
 </style></head>
 <body>
 <header>
@@ -43,18 +48,19 @@ DASHBOARD_HTML = r"""
   <span id="petname" class="pill">…</span>
   <span id="mode" class="pill">…</span>
   <span class="sp"></span>
-  <button onclick="ctl('pause')">⏸ pause</button>
-  <button onclick="ctl('resume')">▶ resume</button>
-  <button onclick="ctl('reset')">⟲ reset</button>
-  <select id="scenario" onchange="ctl('scenario', this.value)">
+  <button class="worldonly" onclick="ctl('pause')">⏸ pause</button>
+  <button class="worldonly" onclick="ctl('resume')">▶ resume</button>
+  <button class="worldonly" onclick="ctl('reset')">⟲ reset</button>
+  <select class="worldonly" id="scenario" onchange="ctl('scenario', this.value)">
     <option value="">scenario…</option>
     <option>poles</option><option>room</option><option>corridor</option><option>slalom</option>
   </select>
+  <span class="worldoff pill">🤖 live robot</span>
 </header>
 <div class="wrap">
   <div class="col">
     <div class="panel">
-      <h3>World map <span class="hint">— click to drop a pole · shift-click to remove</span></h3>
+      <h3>World map <span class="hint worldonly">— click to drop a pole · shift-click to remove</span><span class="hint worldoff">— surroundings radar (what the robot senses)</span></h3>
       <canvas id="map" width="600" height="600"></canvas>
     </div>
     <div class="panel" style="margin-top:12px">
@@ -140,6 +146,32 @@ function drawMap(s){
   g.closePath();g.fill();
 }
 
+function drawRadar(b){
+  // Robot-centered polar view of the costmap for the real robot (no 2D world):
+  // 0deg = up/forward, +bearing = right. Wedges colored blocked/weak/free, with
+  // the chosen-heading ray and the robot at center.
+  const c=$("map"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
+  const cx=c.width/2, cy=c.height/2, R=Math.min(cx,cy)-14;
+  g.strokeStyle="#2a333c";
+  for(let k=1;k<=3;k++){g.beginPath();g.arc(cx,cy,R*k/3,0,7);g.stroke();}
+  if(!b||!b.conf||!b.centers){g.fillStyle="#8b98a5";g.fillText("waiting for brain…",cx-42,cy);return;}
+  const n=b.conf.length, span=n>1?Math.abs(b.centers[1]-b.centers[0]):8;
+  const pt=(deg,r)=>{const a=deg*Math.PI/180;return [cx+r*Math.sin(a), cy-r*Math.cos(a)];};
+  for(let i=0;i<n;i++){
+    const blk=b.blocked&&b.blocked[i];
+    g.fillStyle=blk?"#e5533d":(b.conf[i]>0.15?"#e5b33d":"#2f4a3a");
+    g.globalAlpha=blk?0.55:0.42;
+    const rr=blk?R:R*(0.32+0.68*Math.min(1,b.conf[i]||0.12));
+    g.beginPath();g.moveTo(cx,cy);
+    for(let t=0;t<=1.0001;t+=0.25){const p=pt(b.centers[i]-span/2+t*span,rr);g.lineTo(p[0],p[1]);}
+    g.closePath();g.fill();
+  }
+  g.globalAlpha=1;
+  if(b.heading!=null){const p=pt(b.heading,R);g.strokeStyle=b.forward_clear?"#7ed957":"#e5b33d";
+    g.lineWidth=2;g.beginPath();g.moveTo(cx,cy);g.lineTo(p[0],p[1]);g.stroke();g.lineWidth=1;}
+  g.fillStyle="#e6edf3";g.beginPath();g.moveTo(cx,cy-9);g.lineTo(cx-6,cy+7);g.lineTo(cx+6,cy+7);g.closePath();g.fill();
+}
+
 function drawCost(b){
   const c=$("cost"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
   if(!b||!b.conf){g.fillStyle="#8b98a5";g.fillText("waiting for brain…",8,50);return;}
@@ -161,16 +193,26 @@ function spark(){const c=$("spark"),g=c.getContext("2d");g.clearRect(0,0,c.width
 
 async function tick(){
   let s; try{s=await (await fetch("/sim/state")).json();}catch(e){return;}
-  if(!s.enabled){document.body.innerHTML="<p style='padding:20px'>Sim world disabled — start the server with <code>PICRAWLER_SIM_WORLD=1</code>.</p>";return;}
-  drawMap(s);
+  const worldOn=!!s.enabled;
+  document.body.classList.toggle("no-world",!worldOn);
   const b=s.brain||{};
+  // Map panel: the sim's top-down world when we have one, else a robot-centered
+  // costmap radar (the honest "what it senses around it" view on real hardware).
+  if(worldOn) drawMap(s); else drawRadar(b.costmap);
   drawCost(b.costmap);
-  // telemetry
+  // telemetry + clearance sparkline (sim sonar, or the pet's pushed distance_cm)
   const son=s.sonar||{};
-  dist.push(son.distance||0); if(dist.length>120)dist.shift(); spark();
-  $("telkv").innerHTML=kv({x:s.robot.x,y:s.robot.y,"θ":s.robot.heading+"°",
-    clearance:(son.distance||0)+"cm", reflex:b.reflex?"YES":"no",
-    paused:s.paused?"YES":"no", tick:b.tick??"—"});
+  const clr=worldOn?(son.distance||0):(b.distance_cm==null?null:b.distance_cm);
+  dist.push(clr||0); if(dist.length>120)dist.shift(); spark();
+  if(worldOn){
+    $("telkv").innerHTML=kv({x:s.robot.x,y:s.robot.y,"θ":s.robot.heading+"°",
+      clearance:(son.distance||0)+"cm", reflex:b.reflex?"YES":"no",
+      paused:s.paused?"YES":"no", tick:b.tick??"—"});
+  }else{
+    $("telkv").innerHTML=kv({clearance:clr==null?"—":clr+"cm",
+      camera:b.camera_fused?"fused":"off", forward:b.forward_clear?"clear":"blocked",
+      reflex:b.reflex?"YES":"no", tick:b.tick??"—"});
+  }
   $("mode").textContent=b.mode||"no brain";
   // pet
   $("petname").textContent=b.name||"—";
