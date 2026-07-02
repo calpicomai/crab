@@ -76,6 +76,20 @@ if [ "${SETUP_OLLAMA:-1}" = "1" ]; then
   fi
 fi
 
+# ------------------------------------------------------------ Jetson max power
+# The VLM + perception want the full power budget. nvpmodel -m 0 (MAXN) persists
+# across reboots; jetson_clocks pins clocks to max (does NOT persist — the boot
+# unit brain/systemd/jetson-max-power.service re-applies it). Skip with SET_MAX_POWER=0.
+if [ "${SET_MAX_POWER:-1}" = "1" ] && command -v nvpmodel >/dev/null 2>&1; then
+  echo
+  echo "== Jetson power =="
+  sudo nvpmodel -m 0 >/dev/null 2>&1 && echo "  ✓ nvpmodel -m 0 (MAXN — full power budget)" \
+    || echo "  (couldn't set nvpmodel; run: sudo nvpmodel -m 0)"
+  if command -v jetson_clocks >/dev/null 2>&1; then
+    sudo jetson_clocks >/dev/null 2>&1 && echo "  ✓ jetson_clocks (clocks pinned to max)" || true
+  fi
+fi
+
 cat <<EOF
 
 Agent/pet brain ready.

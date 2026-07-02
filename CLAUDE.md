@@ -43,7 +43,11 @@ brain. Two physical nodes on the same LAN:
   root so `import shared` resolves. **Launchers:** `setup.sh` only builds venvs;
   `robot/run.sh` (Pi) and `brain/run.sh` (Jetson, interactive menu + saved
   `crab.env` prefs) actually run things, and `sim.sh` is the no-hardware button.
-  Keep those the easy one-command entry points.
+  Keep those the easy one-command entry points. **Autostart** is systemd:
+  `robot/systemd/picrawler-server.service` (Pi), `brain/systemd/picrawler-pet.service`
+  + `jetson-max-power.service` (Jetson). **Jetson power:** the VLM needs the full
+  budget, which isn't on by default — `setup_agent.sh` sets `nvpmodel -m 0` (MAXN),
+  the boot unit re-pins `jetson_clocks`, and `run.sh` warns if throttled.
 
 ## Gait seam (important)
 

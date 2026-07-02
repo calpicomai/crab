@@ -68,6 +68,18 @@ EOF
 
 url_ok() { curl -fsS --max-time 3 "$1" >/dev/null 2>&1; }
 
+# Report the Jetson power mode and nudge toward max if it isn't (the VLM + perception
+# want the full budget). Read-only — no sudo; set it once with brain/setup_agent.sh or
+# the brain/systemd/jetson-max-power.service boot unit.
+power_note() {
+  command -v nvpmodel >/dev/null 2>&1 || return 0
+  local m; m="$(nvpmodel -q 2>/dev/null | sed -n 's/.*NV Power Mode: *//p' | head -1)"
+  case "$m" in
+    ""|MAXN|MAXN_SUPER) [ -n "$m" ] && echo "  ✓ Jetson power: $m" || true ;;
+    *) echo "  ⚠ Jetson power mode '$m' is throttled — for full VLM speed: sudo nvpmodel -m 0 && sudo jetson_clocks" ;;
+  esac
+}
+
 # ------------------------------------------------------------------ config
 [ "$MODE" = "reconfigure" ] && { wizard; MODE=""; }
 [ -f "$CONF" ] || wizard
@@ -124,6 +136,7 @@ if [ "$MODE" = "check" ]; then
   dist="$(curl -fsS --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/status" 2>/dev/null \
           | sed -n 's/.*"distance_cm":\([0-9.]*\).*/\1/p')"
   [ -n "$dist" ] && echo "  ✓ ultrasonic reads ${dist} cm" || echo "  – ultrasonic: no reading"
+  power_note
   exit 0
 fi
 
@@ -162,6 +175,7 @@ elif command -v ollama >/dev/null 2>&1; then
 else
   echo "  – no VLM — canned voice. Install one:  bash brain/setup_agent.sh"
 fi
+power_note
 
 # ------------------------------------------------------------------ launch
 # Run the loop in the FOREGROUND (not exec) so the cleanup trap can stop the

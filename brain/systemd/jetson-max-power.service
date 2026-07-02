@@ -1,0 +1,25 @@
+# Pin the Jetson to full power on every boot so the VLM + perception run full-speed.
+# nvpmodel -m 0 (MAXN) persists on its own; jetson_clocks does NOT survive a reboot,
+# which is why this oneshot re-applies both at boot. Harmless on non-Jetson (the
+# commands just fail and are ignored).
+#
+# Install (on the Jetson):
+#   sudo cp brain/systemd/jetson-max-power.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jetson-max-power
+#   nvpmodel -q          # verify: NV Power Mode: MAXN
+
+[Unit]
+Description=Jetson max power (nvpmodel MAXN + jetson_clocks)
+After=nvpmodel.service
+Wants=nvpmodel.service
+
+[Service]
+Type=oneshot
+# Bare names resolve on the Jetson (nvpmodel in /usr/sbin, jetson_clocks in /usr/bin,
+# both on systemd's default PATH). `|| true` so a missing tool never fails the unit.
+ExecStart=/bin/sh -c 'nvpmodel -m 0 || true; jetson_clocks || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

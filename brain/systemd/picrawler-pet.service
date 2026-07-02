@@ -1,0 +1,33 @@
+# Autostart the pet on the Jetson at boot — no laptop needed, flip the power on and
+# it comes alive. It runs brain/run.sh in pet mode, which sources crab.env, starts
+# perception, uses the VLM if up, and launches the pet. Restart=always retries until
+# the robot (Pi) is reachable, so boot order doesn't matter.
+#
+# PREREQUISITE: run the wizard once so crab.env exists (otherwise run.sh would block
+# waiting for wizard input under systemd):
+#   cd ~/crab && bash brain/run.sh        # answer the questions, Ctrl+C after it starts
+#
+# Install (on the Jetson) — edit User + the two paths to match your username:
+#   sudo cp brain/systemd/picrawler-pet.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now picrawler-pet
+#   journalctl -u picrawler-pet -f        # watch it
+#
+# Pair with jetson-max-power.service (full power at boot) and, on the Pi,
+# robot/systemd/picrawler-server.service.
+
+[Unit]
+Description=PiCrawler pet (Jetson brain)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orin
+WorkingDirectory=/home/orin/crab
+ExecStart=/bin/bash /home/orin/crab/brain/run.sh pet
+Restart=always
+RestartSec=8
+
+[Install]
+WantedBy=multi-user.target
