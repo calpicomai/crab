@@ -90,6 +90,17 @@ DASHBOARD_HTML = r"""
       <div class="kv" id="telkv"></div>
       <canvas id="spark" width="600" height="46" style="margin-top:8px"></canvas>
     </div>
+    <div class="panel" style="margin-top:12px">
+      <h3>Vitals over time</h3>
+      <canvas id="vitals" width="600" height="80"></canvas>
+      <div class="hint" style="margin:6px 0 2px">mood</div>
+      <canvas id="moodline" width="600" height="18"></canvas>
+      <div class="kv" id="perfkv" style="margin-top:8px"></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h3>Activity & sightings</h3>
+      <div class="row"><div class="col" id="acts"></div><div class="col" id="sights"></div></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <div class="panel col"><h3>Speech</h3><div id="log"></div></div>
       <div class="panel col"><h3>Events</h3><div id="events"></div></div>
@@ -99,6 +110,8 @@ DASHBOARD_HTML = r"""
 <script>
 const $=id=>document.getElementById(id);
 let W=300,H=300, dist=[], lastSay="", lastAction="", lastMood="";
+let battHist=[], moodHist=[], acts={}, sights={}, lastTgt="";
+const MOODCLR={curious:"#4bd",excited:"#e5b33d",playful:"#7ed957",cautious:"#e58b3d",startled:"#e5533d",bored:"#8b98a5",sleepy:"#5566aa"};
 $("cam").src="/camera/stream";
 
 function ctl(action,scenario){fetch("/sim/control",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -198,6 +211,27 @@ function drawCost(b){
     g.fillStyle="#7ed957";g.fillRect(best*bw,0,bw-1,6);}
 }
 
+function drawVitals(){
+  const c=$("vitals"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
+  const lo=6.0,hi=8.4;                                   // 2S Li-ion window
+  [["#e5b33d",6.6],["#e5533d",6.2]].forEach(([cl,v])=>{  // low / critical guides
+    const y=c.height-(v-lo)/(hi-lo)*c.height;g.strokeStyle=cl;g.setLineDash([4,4]);
+    g.beginPath();g.moveTo(0,y);g.lineTo(c.width,y);g.stroke();g.setLineDash([]);});
+  g.strokeStyle="#7ed957";g.beginPath();const n=battHist.length;
+  battHist.forEach((v,i)=>{const x=i/Math.max(1,n-1)*c.width,
+    y=c.height-(Math.min(hi,Math.max(lo,v))-lo)/(hi-lo)*c.height;i?g.lineTo(x,y):g.moveTo(x,y);});
+  g.stroke();g.fillStyle="#8b98a5";g.fillText("battery V (6.0–8.4; dashed = low / critical)",6,12);}
+function moodStrip(){const c=$("moodline"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
+  const n=moodHist.length,w=c.width/Math.max(1,n);
+  moodHist.forEach((m,i)=>{g.fillStyle=MOODCLR[m]||"#2a333c";g.fillRect(i*w,0,Math.ceil(w),c.height);});}
+function bars(cid,obj){const el=$(cid),keys=Object.keys(obj);
+  if(!keys.length){el.innerHTML="<span class='hint'>—</span>";return;}
+  const mx=Math.max(...keys.map(k=>obj[k]));
+  el.innerHTML=keys.map(k=>`<div style="display:flex;gap:6px;align-items:center;margin:2px 0">`
+    +`<span style="width:80px;color:#8b98a5">${esc(k)}</span>`
+    +`<span style="flex:1;background:#222a31;border-radius:3px"><span style="display:block;height:9px;`
+    +`border-radius:3px;background:#4bd;width:${Math.round(obj[k]/mx*100)}%"></span></span>`
+    +`<span>${obj[k]}</span></div>`).join("");}
 function spark(){const c=$("spark"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
   g.strokeStyle="#4bd";g.beginPath();const n=dist.length;
   dist.forEach((d,i)=>{const x=i/Math.max(1,n-1)*c.width,y=c.height-Math.min(1,d/150)*c.height;
@@ -236,8 +270,20 @@ async function tick(){
   $("world").textContent=b.world?("🧠 "+b.world):"";
   // logs
   if(b.say&&b.say!=lastSay){lastSay=b.say;logLine("log","🐾 "+b.say);}
-  if(b.action&&b.action!=lastAction){lastAction=b.action;logLine("events","· "+b.action);}
+  if(b.action&&b.action!=lastAction){lastAction=b.action;logLine("events","· "+b.action);
+    acts[b.action.split(" ")[0]]=(acts[b.action.split(" ")[0]]||0)+1;}   // action histogram
   if(b.mood&&b.mood!=lastMood){lastMood=b.mood;logLine("events","mood → "+b.mood);}
+  // graphs
+  if(b.battery_v!=null){battHist.push(b.battery_v); if(battHist.length>120)battHist.shift();}
+  moodHist.push(b.mood||null); if(moodHist.length>120)moodHist.shift();
+  if(b.target){const k=b.target.split(" ")[0]; if(k!=lastTgt) sights[k]=(sights[k]||0)+1; lastTgt=k;} else lastTgt="";
+  drawVitals(); moodStrip(); bars("acts",acts); bars("sights",sights);
+  $("perfkv").innerHTML=kv({
+    sonar:(b.distance_cm!=null?("live "+Math.round(b.distance_cm)+"cm"):"— no read"),
+    reflex:(b.reflex?"⚠ stopped":"armed"),
+    think:(b.think_ms?b.think_ms+"ms":"—"),
+    perceive:(b.perc_ms!=null?Math.round(b.perc_ms)+"ms":"—"),
+    loop:(b.loop_hz?b.loop_hz+"Hz":"—")});
 }
 function kv(o){return Object.entries(o).map(([k,v])=>`<span>${k}</span><span>${esc(String(v))}</span>`).join("");}
 function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
