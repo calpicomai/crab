@@ -238,11 +238,15 @@ because it needs `torch2trt` + TensorRT (JetPack) and a built engine — enable 
 with:
 
 ```bash
+# TensorRT must already be importable (a JetPack system package):
+python3 -c 'import tensorrt; print(tensorrt.__version__)'   # if this fails: sudo apt-get install -y nvidia-tensorrt
 bash brain/setup_perception.sh --nanoowl   # installs torch2trt+nanoowl, builds the engine
 ```
 
-If TensorRT isn't present the NanoOWL step warns and skips (YOLO still works); see
-`brain/requirements-perception.txt` for the manual steps.
+The `--nanoowl` step checks for `tensorrt` first and **skips cleanly** if it's
+missing (YOLO still works) — `torch2trt`/`nanoowl` can neither build nor run
+without it. Make sure `brain/.venv` is `--system-site-packages` so it sees the
+system TensorRT. See `brain/requirements-perception.txt` for the manual steps.
 
 **JetPack 6.2 torch prerequisites** (the script handles cuDSS automatically):
 - System CUDA must be installed — `sudo apt-get install -y nvidia-jetpack` —
