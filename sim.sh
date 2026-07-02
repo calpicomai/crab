@@ -19,7 +19,7 @@ PY="$REPO_ROOT/brain/.venv/bin/python"
 
 SCEN=""
 if [ "${1:-}" != "" ] && [[ "$1" != --* ]]; then SCEN="$1"; shift; fi
-if [ -z "$SCEN" ] && [ -t 0 ]; then read -r -p "Scenario (poles/room/corridor/slalom) [poles]: " SCEN 2>&1; fi
+if [ -z "$SCEN" ] && [ -t 0 ]; then read -r -p "Scenario (poles/room/corridor/slalom) [poles]: " SCEN; fi
 SCEN="${SCEN:-poles}"
 
 echo "Starting the simulated robot (scenario: $SCEN) ..."

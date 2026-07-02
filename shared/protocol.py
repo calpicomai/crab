@@ -66,6 +66,13 @@ HEALTH_PATH: str = "/health"
 CAMERA_STREAM_PATH: str = "/camera/stream"  # multipart/x-mixed-replace MJPEG
 CAMERA_FRAME_PATH: str = "/camera/frame"  # single image/jpeg
 
+# Audio lives on the robot (Pi) too — a mic and a speaker — while the heavy STT
+# (Whisper) and TTS (Piper) run on the Jetson brain. Same split as the camera:
+# the Pi is the device, the Jetson is the compute backend. Not Actions (raw audio
+# bytes, not the command envelope) — just canonical paths both sides agree on.
+AUDIO_STREAM_PATH: str = "/audio/stream"  # Pi mic -> Jetson: raw 16-bit PCM
+AUDIO_PLAY_PATH: str = "/audio/play"  # Jetson TTS -> Pi speaker: POST a WAV to play
+
 
 class Pose(str, Enum):
     """Coarse body pose the robot tracks between commands."""

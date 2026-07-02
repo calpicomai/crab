@@ -76,6 +76,10 @@ class MockPetBrain:
         self._flip = 1.0
 
     def reflect(self, image_b64, status, identity, mood, memory_summary) -> PetThought:  # noqa: ANN001
+        heard = status.get("heard")
+        if heard:
+            return PetThought(f"{identity.name}: did you say '{heard}'?", self._rng.uniform(-8, 8),
+                              "tilt", "curious", f"human said '{heard}'")
         dist = status.get("distance_cm")
         blocked = status.get("reflex_stopped") or (isinstance(dist, (int, float)) and dist < 40)
         line = self._rng.choice(_CANNED.get(mood, _CANNED["curious"]))
@@ -113,6 +117,9 @@ class PetBrain:
         dist = status.get("distance_cm")
         dist_s = f"{dist:.0f}cm" if isinstance(dist, (int, float)) else "unknown"
         extra = " (just had to stop — something was close!)" if status.get("reflex_stopped") else ""
+        heard = status.get("heard")
+        if heard:
+            extra += f" Your human just said to you: \"{heard}\" — react to it."
         return f"pose={status.get('pose', '?')}, forward clearance={dist_s}{extra}"
 
     def reflect(self, image_b64, status, identity, mood, memory_summary) -> PetThought:  # noqa: ANN001

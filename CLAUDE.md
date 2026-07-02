@@ -226,10 +226,14 @@ voice). Design rules to preserve:
   (`PET_EMOTE_CHANCE`). Gestures (wag/spin/playbow/perk/sniff/cower/pounce/…) are
   built from the existing abilities so all are reflex-protected; locomotor ones
   are used as reactions, in-place ones as idle fidgets so they don't fight nav.
-- **Voice** (`voice.py`): local **Piper TTS**, threaded/non-blocking, fully
-  optional — missing piper/model/audio → text-only (same degrade pattern as the
-  camera/VLM). This is the output half of roadmap Voice I/O (spoken commands/STT
-  still later).
+- **Voice, both ways** — mic + speaker on the **Pi**, STT/TTS compute on the
+  **Jetson** (same split as the camera). Out: `voice.py` Piper TTS synthesized on
+  the Jetson, `PET_AUDIO_SINK=pi` POSTs the WAV to the robot's `/audio/play`. In:
+  `robot/audio.py` streams the Pi mic (`/audio/stream`), `brain/hearing.py` runs
+  faster-whisper, `brain/pet/commands.py` maps phrases → actions (works with no
+  VLM); free-form speech goes to the mind via `shared.heard`. Paths are in
+  `shared/protocol.py` (`AUDIO_STREAM_PATH`/`AUDIO_PLAY_PATH`), like the camera.
+  All optional/degradable (no ALSA/piper/whisper → text-only).
 - Reuses `costmap.py`, the reflex-protected `client`, and `brain/agent` LLM
   backend/config. Works today with `--sim`/`--no-llm`/no-voice (no GPU/model/audio).
 

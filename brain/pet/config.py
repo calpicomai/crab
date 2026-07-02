@@ -35,10 +35,24 @@ PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGEN
 PET_EMOTE: bool = os.environ.get("PET_EMOTE", "1").strip().lower() not in {"0", "false", "no", "off"}
 PET_EMOTE_CHANCE: float = float(os.environ.get("PET_EMOTE_CHANCE", "0.4"))
 
-# --- Voice (Piper TTS, local, optional) ---------------------------------------
-# Off by default (needs piper + a voice model + an audio device). Turn on with
-# PET_VOICE=1 and point PET_VOICE_MODEL at a Piper .onnx voice. Missing pieces ->
-# the pet just stays text-only (see brain/pet/voice.py).
+# --- Voice out (Piper TTS) -----------------------------------------------------
+# Off by default (needs piper + a voice model). Turn on with PET_VOICE=1 and point
+# PET_VOICE_MODEL at a Piper .onnx voice. Synthesis runs on the Jetson; playback
+# goes to the sink: "pi" (default — POST the WAV to the robot's /audio/play so it
+# comes out of the Pi's speaker) or "local" (aplay here, for laptop dev). Missing
+# pieces -> the pet stays text-only (see brain/pet/voice.py).
 PET_VOICE: bool = os.environ.get("PET_VOICE", "").strip().lower() in {"1", "true", "yes", "on"}
 PET_VOICE_MODEL: str | None = os.environ.get("PET_VOICE_MODEL") or None
 PET_VOICE_PLAYER: str = os.environ.get("PET_VOICE_PLAYER", "aplay -q")
+PET_AUDIO_SINK: str = os.environ.get("PET_AUDIO_SINK", "pi").strip().lower()  # pi | local
+
+# --- Voice in (spoken commands: Pi mic -> Jetson Whisper STT) ------------------
+# On by default, but degrades to off if faster-whisper isn't installed or the mic
+# stream is unreachable. The pet mic lives on the Pi (robot's /audio/stream);
+# faster-whisper runs here. PET_WAKE_WORD (default the pet's name at runtime, if
+# set) gates which utterances it reacts to; empty = react to all speech.
+PET_STT: bool = os.environ.get("PET_STT", "1").strip().lower() not in {"0", "false", "no", "off"}
+WHISPER_MODEL: str = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_DEVICE: str = os.environ.get("WHISPER_DEVICE", "auto")
+WHISPER_COMPUTE: str = os.environ.get("WHISPER_COMPUTE", "int8")
+PET_WAKE_WORD: str = os.environ.get("PET_WAKE_WORD", "")

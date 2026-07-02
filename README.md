@@ -486,10 +486,17 @@ What makes it a pet:
   mood's **signature move**; between steps it sprinkles smaller fidgets (tuned by
   `PET_EMOTE_CHANCE`) so it always reads as a living creature. All built from the
   existing abilities, so every gesture is reflex-protected.
-- **Voice** (`brain/pet/voice.py`) — it can **speak its lines aloud** via local
-  **Piper TTS** (`--voice`, or `PET_VOICE=1` + `PET_VOICE_MODEL=/path/voice.onnx`).
-  Fully local; entirely optional — no Piper/model/audio device → it just stays
-  text-only. With no LLM it still barks/whines short canned lines on mood changes.
+- **Voice, both ways** — the **mic + speaker live on the Pi**, the STT/TTS compute
+  on the Jetson (same split as the camera). It **speaks** its lines with **Piper
+  TTS** (`--voice` + `PET_VOICE_MODEL`), synthesized on the Jetson and played on
+  the **Pi's speaker** (`PET_AUDIO_SINK=pi`, via the robot's `/audio/play`). The
+  speaker is the Robot HAT's onboard I2S amp — run SunFounder's `i2samp.sh` once
+  so it's the default ALSA sink (see `brain/setup_voice.sh`). It
+  **listens** for **spoken commands** — the Pi streams its mic (`/audio/stream`),
+  the Jetson runs **faster-whisper**, and `brain/pet/commands.py` maps phrases to
+  actions (`sit`/`come`/`stay`/`spin`/`good boy`/`go`…) that work even with no VLM;
+  free-form speech is fed to the mind so the VLM reacts in character. All local,
+  all optional — missing piper/model/whisper/mic → it degrades to text-only.
 - **Episodic memory** (`brain/pet/memory.py`) — a local SQLite log of what it saw
   and felt; drives recognition and feeds the personality growth. First piece of
   the roadmap's learning stack.
@@ -646,9 +653,10 @@ also adds weight the servos must carry.
    robot's abilities as tools; free-roams + narrates, falls back to the reactive
    costmap when the LLM is unavailable. *Built — see
    [LLM brain: multimodal agent loop](#llm-brain-multimodal-agent-loop-brainagent).*
-4. **Voice I/O** — 🟡 *TTS output started* (`brain/pet/voice.py`: local Piper TTS
-   speaks the pet's lines). Still to do: wake word + VAD → whisper.cpp /
-   faster-whisper STT for spoken *commands*.
+4. ✅ **Voice I/O** — mic + speaker on the Pi, compute on the Jetson: Piper **TTS**
+   out the Pi's speaker + faster-whisper **STT** on spoken commands (`robot/audio.py`,
+   `brain/hearing.py`, `brain/pet/{voice,commands}.py`). *Built — see the Pet's
+   "Voice, both ways".* (A wake-word gate is optional via `PET_WAKE_WORD`.)
 5. **Learning stack** (all local, staged):
    - **Episodic memory** — 🟡 *started* (`brain/pet/memory.py`: on-device SQLite
      log the pet remembers from and grows its personality on). Next: richer
