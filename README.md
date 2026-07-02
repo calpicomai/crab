@@ -517,14 +517,31 @@ What makes it a pet:
 - **Episodic memory** (`brain/pet/memory.py`) — a local SQLite log of what it saw
   and felt; drives recognition and feeds the personality growth. First piece of
   the roadmap's learning stack.
+- **A world model** (`brain/pet/worldmodel.py`) — the substrate that makes it act
+  *with intent* instead of wiggling. It learns, from what it sees + does: **objects**
+  (what/how often/where last), a **sense of place** (recognizes a spot by the set of
+  things visible there — no metric map needed), and an **action→outcome** model it
+  can `predict` from ("walking here usually stalls"). It turns detections into a
+  **target to go to** — so the pet **chases cats and dogs** (`PET_CHASE_LABELS`) and
+  approaches other interesting things, getting bored of the over-familiar. Motion is
+  now **purposeful**: multi-stride bursts scaled by mood, smoothed heading with a
+  forward deadband (no more constant micro-turns), and gestures with intent — it
+  **perks** at something new and **pounces** when closing in. It narrates what it
+  knows ("I know this spot"), and the world summary feeds the VLM's prompt so it
+  levels up when a model is online (canned mode still chases). Chasing steers by the
+  target's bearing while the **Pi reflex** keeps it from colliding.
 
 Honest limits: personality growth is persisted text/tallies, not learned weights;
-"where things are" stays loose (no metric map). Config: `PET_NAME`, `PET_HOME`,
-`PET_REFLECT_S`, `PET_EVOLVE_EVERY`, `PET_HYSTERESIS_TICKS`, `PET_EMOTE`/
-`PET_EMOTE_CHANCE`, `PET_VOICE`/`PET_VOICE_MODEL`/`PET_VOICE_PLAYER`, plus the
-shared LLM/costmap/reflex knobs; flags `--voice`/`--no-voice`/`--no-emote`.
-`wander` remains the plain reactive fallback and `brain/agent` the goal-driven
-agent; `pet` is built on both.
+the world model is *structured + learned* (frequency stats + label fingerprints),
+not a trained neural model or literal consciousness; "where things are" stays loose
+(no metric map/SLAM — the sensors can't support it); and it *pursues* a cat, it
+won't reliably *catch* one. Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`,
+`PET_EVOLVE_EVERY`, `PET_HYSTERESIS_TICKS`, `PET_EMOTE`/`PET_EMOTE_CHANCE`,
+`PET_VOICE`/`PET_VOICE_MODEL`/`PET_VOICE_PLAYER`, and the world-model knobs
+`PET_CHASE_LABELS`/`PET_INTEREST_LABELS`/`PET_WALK_STEPS_*`/`PET_HEADING_SMOOTH`/
+`PET_FORWARD_DEADBAND_DEG`/`PET_WORLD_DB`, plus the shared LLM/costmap/reflex knobs;
+flags `--voice`/`--no-voice`/`--no-emote`/`--world-db`. `wander` remains the plain
+reactive fallback and `brain/agent` the goal-driven agent; `pet` is built on both.
 
 ### Custom gait (experimental, tune on hardware)
 

@@ -30,6 +30,37 @@ PET_HYSTERESIS_TICKS: int = int(os.environ.get("PET_HYSTERESIS_TICKS", "3"))
 # blocked). 0 disables the escape.
 PET_ANTISPIN_TICKS: int = int(os.environ.get("PET_ANTISPIN_TICKS", "6"))
 
+# --- World model (brain/pet/worldmodel.py) ------------------------------------
+# Persistent objects + places + action->outcome learning, grown from experience.
+PET_WORLD_DB: str = os.environ.get("PET_WORLD_DB", os.path.join(PET_HOME, "world.db"))
+# Labels the pet actively CHASES — highest interest, and it stays exciting even when
+# familiar (it never gets bored of cats). Matched as substrings of a detection label
+# (so YOLO "cat" and NanoOWL "a cat" both hit). Comma-separated.
+PET_CHASE_LABELS: list[str] = [s.strip() for s in os.environ.get(
+    "PET_CHASE_LABELS", "cat,dog").split(",") if s.strip()]
+# Labels that are interesting to APPROACH — medium pull that fades as they become
+# familiar (curiosity + boredom-of-the-seen).
+PET_INTEREST_LABELS: list[str] = [s.strip() for s in os.environ.get(
+    "PET_INTEREST_LABELS", "person,bird,teddy bear,sports ball,bottle,cup").split(",") if s.strip()]
+# Minimum interest (0..1) for something in view to become a target it steers toward.
+PET_TARGET_MIN_INTEREST: float = float(os.environ.get("PET_TARGET_MIN_INTEREST", "0.35"))
+# Keep pursuing a target's last-seen bearing for this many cycles after it leaves
+# view (a short "where'd it go?" search) before giving up and wandering.
+PET_TARGET_LOST_TICKS: int = int(os.environ.get("PET_TARGET_LOST_TICKS", "3"))
+
+# --- Purposeful motion (de-twitch) --------------------------------------------
+# Strides per forward decision, scaled by mood.explore_bias between these bounds.
+# Longer, committed bursts read as intentional instead of one-step shuffling; the
+# Pi reflex still guards every stride.
+PET_WALK_STEPS_MIN: int = int(os.environ.get("PET_WALK_STEPS_MIN", "1"))
+PET_WALK_STEPS_MAX: int = int(os.environ.get("PET_WALK_STEPS_MAX", "3"))
+# EMA smoothing on the desired heading (0 = react instantly, →1 = very smooth) to
+# stop jittery per-tick steering, plus a forward deadband: if the desired heading is
+# within this many degrees of straight ahead, just walk instead of emitting a
+# micro-turn — the direct fix for the constant little wiggles.
+PET_HEADING_SMOOTH: float = float(os.environ.get("PET_HEADING_SMOOTH", "0.5"))
+PET_FORWARD_DEADBAND_DEG: float = float(os.environ.get("PET_FORWARD_DEADBAND_DEG", "18"))
+
 # Reflex clearance handed to each walk (Pi aborts the stride below it).
 PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGENT_REFLEX_CM)))
 
@@ -38,7 +69,7 @@ PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGEN
 # does that mood's signature move; between steps it sprinkles smaller fidgets with
 # probability PET_EMOTE_CHANCE so it always reads as a living creature.
 PET_EMOTE: bool = os.environ.get("PET_EMOTE", "1").strip().lower() not in {"0", "false", "no", "off"}
-PET_EMOTE_CHANCE: float = float(os.environ.get("PET_EMOTE_CHANCE", "0.4"))
+PET_EMOTE_CHANCE: float = float(os.environ.get("PET_EMOTE_CHANCE", "0.15"))
 
 # --- Voice out (Piper TTS) -----------------------------------------------------
 # Off by default (needs piper + a voice model). Turn on with PET_VOICE=1 and point

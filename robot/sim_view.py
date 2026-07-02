@@ -79,6 +79,7 @@ DASHBOARD_HTML = r"""
         <div class="col kv" id="petkv"></div>
       </div>
       <div id="say" class="hint" style="margin-top:8px"></div>
+      <div id="world" class="hint" style="margin-top:6px"></div>
     </div>
     <div class="panel" style="margin-top:12px">
       <h3>Camera (first-person)</h3>
@@ -218,8 +219,9 @@ async function tick(){
   $("petname").textContent=b.name||"—";
   $("mood").textContent=moodEmoji(b.mood)+" "+(b.mood||"—");
   $("gesture").textContent=b.gesture&&b.gesture!="none"?("*"+b.gesture+"*"):"";
-  $("petkv").innerHTML=kv({memories:b.memory??"—",character:""});
+  $("petkv").innerHTML=kv({memories:b.memory??"—", target:b.target||"—", place:b.place||"—"});
   if(b.character)$("say").innerHTML="<i>"+esc(b.character)+"</i>";
+  $("world").textContent=b.world?("🧠 "+b.world):"";
   // logs
   if(b.say&&b.say!=lastSay){lastSay=b.say;logLine("log","🐾 "+b.say);}
   if(b.action&&b.action!=lastAction){lastAction=b.action;logLine("events","· "+b.action);}
