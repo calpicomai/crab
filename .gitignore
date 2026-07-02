@@ -16,6 +16,8 @@ env/
 # Local config / secrets (protocol config is in code; anything local goes here)
 .env
 *.local
+crab.env          # per-rig launcher prefs written by brain/run.sh
+.run/             # launcher runtime logs (perception/sim server)
 
 # Editor / OS
 .vscode/

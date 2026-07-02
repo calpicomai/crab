@@ -40,7 +40,10 @@ brain. Two physical nodes on the same LAN:
   rather than all-always-on.
 - **Python throughout.** Separate `requirements.txt` and venv per node (the Pi's
   deps are minimal; the Jetson's assume CUDA/JetPack). Run both from the repo
-  root so `import shared` resolves.
+  root so `import shared` resolves. **Launchers:** `setup.sh` only builds venvs;
+  `robot/run.sh` (Pi) and `brain/run.sh` (Jetson, interactive menu + saved
+  `crab.env` prefs) actually run things, and `sim.sh` is the no-hardware button.
+  Keep those the easy one-command entry points.
 
 ## Gait seam (important)
 

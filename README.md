@@ -62,7 +62,41 @@ segment (the movement link).
 
 See `CLAUDE.md` for the full conventions.
 
-## Setup & run
+## Quickstart — run it on the hardware
+
+The easy path: one setup per node (once), then a single `run.sh` on each. You
+don't memorize flags — `brain/run.sh` asks you a few questions the first time,
+saves them to `crab.env`, and then just shows a menu.
+
+```bash
+# 1. one-time, on each machine (builds the venv + installs deps):
+bash robot/setup.sh          # on the Pi
+bash brain/setup.sh          # on the Jetson  (+ setup_perception.sh for YOLO/NanoOWL,
+                             #                  + setup_agent.sh for a VLM voice)
+
+# 2. SAFETY: charge the 2S pack and ELEVATE the robot (legs clear) for the first run.
+
+# 3. on the Pi — start the robot:
+bash robot/run.sh
+
+# 4. on the Jetson — start the brain (first run asks a few Qs, then a menu):
+bash brain/run.sh            # pick: pet / wander / agent / check
+bash brain/run.sh check      # readiness checklist, moves nothing
+```
+
+`brain/run.sh` finds the robot, starts the perception server for you, uses a VLM
+if you configured one (else the pet's canned voice), and picks sensible flags
+from your saved answers. Re-run the questions any time with
+`bash brain/run.sh reconfigure`. Power users can skip the menu:
+`bash brain/run.sh pet -- --goal "explore the kitchen"`.
+
+**No hardware?** Try the whole thing in the simulator with one command:
+
+```bash
+bash sim.sh                  # then open http://localhost:8000/sim
+```
+
+## Setup & run (details)
 
 Each node uses its own virtual environment (see `CLAUDE.md`). A setup script per
 node creates the venv and installs the dependencies in one step — use it rather
@@ -557,6 +591,45 @@ re-run the SunFounder calibration tool, re-seat the servo horn, or check it's
 wired to the channel picrawler expects (`PIN_LIST`). Also **fully charge** the
 2×18650 cells — low cells are a common brownout cause. Once every leg reaches
 standing individually without stalling, `stand` via the server should be stable.
+
+**Battery upgrade — go higher-*current*, not higher-*voltage*.** The most
+effective hardware fix for the brownout is cells that don't **sag** under the
+servo current spike. The SunFounder Robot HAT input is **2-cell lithium only:
+6.0 V–8.4 V** via an XH2.54 connector ([SunFounder docs](https://docs.sunfounder.com/projects/robot-hat-v4/en/stable/battery.html)),
+so **stay 2S** — a 3S/11.1 V pack can damage the HAT. When the pack sags below
+~6.0 V under load the HAT cuts out, which is the reset. So swap the stock cells
+for **high-drain 18650s** (more peak current, less sag, and more runtime):
+
+| Cell | Capacity | Continuous current | Notes |
+|---|---|---|---|
+| [Molicel P28A](https://www.18650batterystore.com/products/molicel-p28a) | 2800 mAh | ~35 A | highest real current → least sag; best for the brownout |
+| [Samsung 30Q](https://www.18650batterystore.com/products/samsung-30q-18650-3000mah-15a-battery) | 3000 mAh | ~15 A | most capacity; very common |
+| [Sony/Murata VTC6](https://www.18650batterystore.com/products/sony-vtc6) | 3000 mAh | ~15 A (30 A is a pulse/temp-limited rating, not continuous) | capacity + current balance |
+
+All three are **flat-top, unprotected** — confirm that matches your holder
+(button-top vs flat-top) and that they fully seat. **Buy from a reputable battery
+seller, not the cheapest Amazon listing** — counterfeit/over-rated 18650s ("9900
+mAh!") are rampant; e.g. [18650batterystore.com](https://www.18650batterystore.com/),
+[imrbatteries.com](https://imrbatteries.com/), or [illumn.com](https://illumn.com/)
+(authorized distributors). A high-drain pack plus the staged-motion + reflex
+software above should let you push gait speed back up.
+
+**About a 2S LiPo (not plug-and-play).** Voltage-wise a 2S LiPo is fine (≤ 8.4 V),
+but the HAT's power input is a **JST-XH 2.54 mm 3-pin** connector wired
+**Negative / cell-midpoint / Positive** — the middle pin is the junction between
+the two cells, which the HAT uses to balance/charge them
+([pinout](https://docs.sunfounder.com/projects/pipower5/en/latest/pipower_hat.html),
+[PiCrawler 3-pin battery](https://docs.sunfounder.com/projects/pi-crawler/en/latest/hardware/cpn_battery.html)).
+A LiPo's **balance lead** matches that connector/pinout but is **thin wire** not
+rated for the servo current (powering through it just re-creates the sag), and
+its **thick main lead** carries the current but is the wrong connector with no
+midpoint. So a LiPo needs a **custom adapter** (main leads → the outer ±pins, the
+balance-lead midpoint → the middle pin) — **verify polarity against the board
+silkscreen** before plugging in — and you must **charge it externally** with a 2S
+balance charger (the onboard charger is tuned for the 2×18650 Li-ion pack). Unless
+you specifically need LiPo capacity, **high-drain 2×18650s in the stock holder are
+far simpler** — they already have the correct 3-pin connector — and a bigger pack
+also adds weight the servos must carry.
 
 ## Roadmap
 
