@@ -60,7 +60,7 @@ DASHBOARD_HTML = r"""
 <div class="wrap">
   <div class="col">
     <div class="panel">
-      <h3>World map <span class="hint worldonly">— click to drop a pole · shift-click to remove</span><span class="hint worldoff">— surroundings radar (what the robot senses)</span></h3>
+      <h3>World map <span class="hint worldonly">— click to drop a pole · shift-click to remove</span><span class="hint worldoff">— local scan map (refreshes as it moves)</span></h3>
       <canvas id="map" width="600" height="600"></canvas>
     </div>
     <div class="panel" style="margin-top:12px">
@@ -148,28 +148,40 @@ function drawMap(s){
 }
 
 function drawRadar(b){
-  // Robot-centered polar view of the costmap for the real robot (no 2D world):
-  // 0deg = up/forward, +bearing = right. Wedges colored blocked/weak/free, with
-  // the chosen-heading ray and the robot at center.
+  // Top-down LOCAL MAP for the real robot (no 2D world): robot at center pointing
+  // up, 0deg=up, +bearing=right. Range rings (cm), a faint free/weak/blocked wedge
+  // wash, obstacle POINTS plotted at each bin's (bearing, range), and the chosen-
+  // heading ray. It's a robot-relative scan that refreshes as it moves (no odometry).
   const c=$("map"),g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);
-  const cx=c.width/2, cy=c.height/2, R=Math.min(cx,cy)-14;
-  g.strokeStyle="#2a333c";
-  for(let k=1;k<=3;k++){g.beginPath();g.arc(cx,cy,R*k/3,0,7);g.stroke();}
-  if(!b||!b.conf||!b.centers){g.fillStyle="#8b98a5";g.fillText("waiting for brain…",cx-42,cy);return;}
-  const n=b.conf.length, span=n>1?Math.abs(b.centers[1]-b.centers[0]):8;
+  const cx=c.width/2, cy=c.height/2, R=Math.min(cx,cy)-22;
   const pt=(deg,r)=>{const a=deg*Math.PI/180;return [cx+r*Math.sin(a), cy-r*Math.cos(a)];};
+  const maxr=(b&&b.max_range)||120;
+  g.strokeStyle="#2a333c";g.fillStyle="#5a6673";g.textAlign="center";
+  for(let k=1;k<=3;k++){const rr=R*k/3;g.beginPath();g.arc(cx,cy,rr,0,7);g.stroke();
+    g.fillText(Math.round(maxr*k/3)+"cm",cx,cy-rr-3);}
+  g.textAlign="start";
+  if(!b||!b.conf||!b.centers){g.fillStyle="#8b98a5";g.fillText("waiting for brain…",cx-42,cy);return;}
+  const n=b.conf.length, span=n>1?Math.abs(b.centers[1]-b.centers[0]):8, rng=b.range||[];
+  // faint wedge wash (context behind the points)
   for(let i=0;i<n;i++){
     const blk=b.blocked&&b.blocked[i];
-    g.fillStyle=blk?"#e5533d":(b.conf[i]>0.15?"#e5b33d":"#2f4a3a");
-    g.globalAlpha=blk?0.55:0.42;
-    const rr=blk?R:R*(0.32+0.68*Math.min(1,b.conf[i]||0.12));
+    g.fillStyle=blk?"#e5533d":(b.conf[i]>0.15?"#e5b33d":"#2f4a3a");g.globalAlpha=0.13;
     g.beginPath();g.moveTo(cx,cy);
-    for(let t=0;t<=1.0001;t+=0.25){const p=pt(b.centers[i]-span/2+t*span,rr);g.lineTo(p[0],p[1]);}
+    for(let t=0;t<=1.0001;t+=0.5){const p=pt(b.centers[i]-span/2+t*span,R);g.lineTo(p[0],p[1]);}
     g.closePath();g.fill();
   }
   g.globalAlpha=1;
+  // obstacle points at (bearing, range) — the map itself
+  for(let i=0;i<n;i++){
+    const r=rng[i]; if(r==null||r>=maxr-1) continue;    // nothing sensed in this bin
+    const p=pt(b.centers[i], R*Math.min(1,r/maxr)), blk=b.blocked&&b.blocked[i];
+    g.fillStyle=blk?"#e5533d":"#e5b33d";
+    g.beginPath();g.arc(p[0],p[1],blk?4:3,0,7);g.fill();
+  }
+  // chosen-heading ray
   if(b.heading!=null){const p=pt(b.heading,R);g.strokeStyle=b.forward_clear?"#7ed957":"#e5b33d";
     g.lineWidth=2;g.beginPath();g.moveTo(cx,cy);g.lineTo(p[0],p[1]);g.stroke();g.lineWidth=1;}
+  // robot at center, pointing up
   g.fillStyle="#e6edf3";g.beginPath();g.moveTo(cx,cy-9);g.lineTo(cx-6,cy+7);g.lineTo(cx+6,cy+7);g.closePath();g.fill();
 }
 

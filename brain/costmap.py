@@ -276,6 +276,11 @@ class LocalCostmap:
         return {
             "centers": [round(c, 1) for c in self._centers],
             "conf": [round(c, 3) for c in self.conf],
+            # Nearest estimated range per bin (cm) — lets the dashboard plot obstacle
+            # POINTS at (bearing, range) for a top-down local map, not just a fan.
+            # max_range means "nothing seen in this bin".
+            "range": [round(r, 1) for r in self.range],
+            "max_range": round(self.max_range, 1),
             "blocked": self._blocked_mask(),
             "heading": round(heading, 1),
             "forward_clear": forward_clear,

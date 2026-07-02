@@ -119,6 +119,15 @@ behavior-level** (idealized odometry, no servo physics — a physics/URDF sim is
 far-later option). The `/sim*` endpoints are **dev-only**, NOT part of the
 robot↔brain command protocol in `shared/`.
 
+**On the real robot** (no sim world) the `/sim` dashboard degrades to a live view fed
+by the pet's telemetry: a **top-down local scan map** (the `no-world`/`drawRadar` path
+in `robot/sim_view.py`) plots obstacle points at each costmap bin's (bearing, range) —
+`LocalCostmap.snapshot()` exposes per-bin `range`/`max_range` for this — refreshed by
+the pet's periodic **look-around** rotate-to-scan (`PET_SCAN_EVERY`, reusing
+`wander._rotate_to_scan`). Honest scope: robot-relative, refreshes as it moves — NOT a
+persistent metric/3D world map (the sensors can't). The world-model's places/objects
+are the persistent "what it learned" layer.
+
 ## Perception (camera on the Pi, detection on the Jetson)
 
 The **camera is on the robot (Pi)** — the Pi 4B can't run the detectors, so it

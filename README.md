@@ -565,6 +565,13 @@ won't reliably *catch* one.
   `PET_BATTERY_LOW_V` (caps gait speed to ease the current draw) and **rests** below
   `PET_BATTERY_CRITICAL_V` — protecting the cells and heading off the brownout. Shown
   in the tick log (`batt=7.4V⚠`), the dashboard, and `brain/run.sh check`.
+- **Surveys its surroundings** — every `PET_SCAN_EVERY` cycles (when not chasing) it
+  pauses to **look around**, sweeping the fixed sonar by turning the body to fill in
+  more than the forward cone. The `/sim` dashboard renders this as a **top-down local
+  scan map** (obstacle points at bearing+range around the robot, with range rings). It's
+  a robot-relative scan that refreshes as it moves — not a metric/3D world map (the lone
+  fixed ultrasonic can't do that); the world-model's places/objects are the persistent
+  layer.
 
 Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`,
 `PET_EVOLVE_EVERY`, `PET_HYSTERESIS_TICKS`, `PET_EMOTE`/`PET_EMOTE_CHANCE`,

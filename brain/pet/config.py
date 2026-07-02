@@ -60,6 +60,11 @@ PET_WALK_STEPS_MAX: int = int(os.environ.get("PET_WALK_STEPS_MAX", "3"))
 # micro-turn — the direct fix for the constant little wiggles.
 PET_HEADING_SMOOTH: float = float(os.environ.get("PET_HEADING_SMOOTH", "0.5"))
 PET_FORWARD_DEADBAND_DEG: float = float(os.environ.get("PET_FORWARD_DEADBAND_DEG", "18"))
+# Every N body cycles (when not chasing), pause to "look around": rotate the body to
+# sweep the fixed forward sonar across its surroundings and fill the costmap beyond
+# the forward cone — this is what builds the top-down surroundings map on the
+# dashboard. Reads as surveying; reflex-safe (only turns). 0 disables.
+PET_SCAN_EVERY: int = int(os.environ.get("PET_SCAN_EVERY", "20"))
 
 # --- Battery-aware behavior (uses RobotStatus.battery_v) ----------------------
 # Below LOW_V the pet slows down (caps gait speed) to ease the current draw; below
