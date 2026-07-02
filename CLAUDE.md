@@ -78,6 +78,13 @@ shared 2×18650 rail. Keep motion staged/slow. `test_leg(leg, speed)` +
 mis-calibrated/mis-wired/stalling leg. See the README "Movement safety /
 brownout" section.
 
+**Battery monitor** (`robot/sensors.py:BatterySensor`, guarded — prefers robot_hat's
+own reading, else a scaled ADC channel, else simulate): voltage rides on
+`RobotStatus.battery_v`, and the pet caps gait speed below `PET_BATTERY_LOW_V` and
+rests below `PET_BATTERY_CRITICAL_V` — a second line of brownout defense (low cells
+sag hardest under the servo spike). Don't assume a specific robot_hat voltage API;
+keep the read guarded/degradable.
+
 On startup the server homes to `config.HOME_ON_START` (`stand`/`sit`/`none`,
 default `stand`) via the same staged motion, so it doesn't sit in picrawler's
 splayed power-on pose. Homing runs from the app **lifespan** hook (not `main()`)

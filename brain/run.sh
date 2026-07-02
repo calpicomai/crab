@@ -138,9 +138,11 @@ if [ "$MODE" = "check" ]; then
   else
     echo "  – no VLM (pet uses its canned voice)"
   fi
-  dist="$(curl -fsS --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/status" 2>/dev/null \
-          | sed -n 's/.*"distance_cm":\([0-9.]*\).*/\1/p')"
+  stjson="$(curl -fsS --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/status" 2>/dev/null)"
+  dist="$(printf '%s' "$stjson" | sed -n 's/.*"distance_cm":\([0-9.]*\).*/\1/p')"
   [ -n "$dist" ] && echo "  ✓ ultrasonic reads ${dist} cm" || echo "  – ultrasonic: no reading"
+  batt="$(printf '%s' "$stjson" | sed -n 's/.*"battery_v":\([0-9.]*\).*/\1/p')"
+  [ -n "$batt" ] && echo "  ✓ battery ${batt} V" || echo "  – battery: no reading"
   power_note
   exit 0
 fi

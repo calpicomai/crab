@@ -208,11 +208,11 @@ async function tick(){
   if(worldOn){
     $("telkv").innerHTML=kv({x:s.robot.x,y:s.robot.y,"θ":s.robot.heading+"°",
       clearance:(son.distance||0)+"cm", reflex:b.reflex?"YES":"no",
-      paused:s.paused?"YES":"no", tick:b.tick??"—"});
+      battery:batt(b), paused:s.paused?"YES":"no", tick:b.tick??"—"});
   }else{
     $("telkv").innerHTML=kv({clearance:clr==null?"—":clr+"cm",
       camera:b.camera_fused?"fused":"off", forward:b.forward_clear?"clear":"blocked",
-      reflex:b.reflex?"YES":"no", tick:b.tick??"—"});
+      reflex:b.reflex?"YES":"no", battery:batt(b), tick:b.tick??"—"});
   }
   $("mode").textContent=b.mode||"no brain";
   // pet
@@ -230,6 +230,7 @@ async function tick(){
 function kv(o){return Object.entries(o).map(([k,v])=>`<span>${k}</span><span>${esc(String(v))}</span>`).join("");}
 function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function moodEmoji(m){return {curious:"🐕",excited:"🤩",playful:"🐩",cautious:"😟",startled:"😱",bored:"😑",sleepy:"😴"}[m]||"🐾";}
+function batt(b){return b.battery_v==null?"—":(b.battery_v.toFixed(1)+"V"+(b.battery_low?" ⚠":""));}
 setInterval(tick,140); tick();
 </script>
 </body></html>

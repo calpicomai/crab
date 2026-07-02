@@ -153,6 +153,10 @@ class RobotStatus(BaseModel):
     # forward clearance drop below the reflex distance mid-stride. The brain treats
     # this as an authoritative close-range obstacle and steers away.
     reflex_stopped: bool = False
+    # Battery pack voltage in volts (None = no battery sensor). Sensed on the Pi
+    # (Robot HAT); the brain slows/rests the pet when it runs low, to protect the
+    # cells and avoid a brownout. Additive — default keeps every caller valid.
+    battery_v: float | None = None
 
 
 class CommandResponse(BaseModel):

@@ -61,6 +61,15 @@ PET_WALK_STEPS_MAX: int = int(os.environ.get("PET_WALK_STEPS_MAX", "3"))
 PET_HEADING_SMOOTH: float = float(os.environ.get("PET_HEADING_SMOOTH", "0.5"))
 PET_FORWARD_DEADBAND_DEG: float = float(os.environ.get("PET_FORWARD_DEADBAND_DEG", "18"))
 
+# --- Battery-aware behavior (uses RobotStatus.battery_v) ----------------------
+# Below LOW_V the pet slows down (caps gait speed) to ease the current draw; below
+# CRITICAL_V it stops wandering and rests to protect the cells / avoid a brownout.
+# Volts for a 2S Li-ion pack: full ~8.4, nominal 7.4, get-it-on-the-charger ~6.6,
+# hard floor ~6.0. No battery sensor (None) -> these never trigger.
+PET_BATTERY_LOW_V: float = float(os.environ.get("PET_BATTERY_LOW_V", "6.6"))
+PET_BATTERY_CRITICAL_V: float = float(os.environ.get("PET_BATTERY_CRITICAL_V", "6.2"))
+PET_BATTERY_LOW_SPEED: int = int(os.environ.get("PET_BATTERY_LOW_SPEED", "55"))
+
 # Reflex clearance handed to each walk (Pi aborts the stride below it).
 PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGENT_REFLEX_CM)))
 

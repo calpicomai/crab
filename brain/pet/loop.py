@@ -102,8 +102,16 @@ def _push_interest_prompts(perc: "httpx.Client | None", labels: list[str]) -> No
 def _status_dict(client: RobotClient) -> dict:
     st = client.get_status().status
     if st is None:
-        return {"pose": "?", "distance_cm": None, "reflex_stopped": False}
-    return {"pose": st.pose.value, "distance_cm": st.distance_cm, "reflex_stopped": st.reflex_stopped}
+        return {"pose": "?", "distance_cm": None, "reflex_stopped": False, "battery_v": None}
+    return {"pose": st.pose.value, "distance_cm": st.distance_cm,
+            "reflex_stopped": st.reflex_stopped, "battery_v": st.battery_v}
+
+
+def _speed(mood: Mood, low_batt: bool) -> int:
+    """Gait speed for the current mood, capped when the battery is low (eases the
+    servo current draw so a weak pack doesn't brown out the Pi)."""
+    s = mood.params().speed
+    return min(s, pet_config.PET_BATTERY_LOW_SPEED) if low_batt else s
 
 
 def _probe_perception(perc: "httpx.Client | None") -> bool:
@@ -268,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     last_target = None            # a Target we keep pursuing briefly after it leaves view
     target_lost = 0
     prev_target_label: str | None = None
+    batt_rested = False           # latched so we warn/sit once when the battery is critical
     last_heard: str | None = None
     tick = 0
     started = time.monotonic()
@@ -314,6 +323,24 @@ def main(argv: list[str] | None = None) -> int:
 
             status = _status_dict(client)
             dist = status["distance_cm"]
+            batt = status.get("battery_v")
+            low_batt = batt is not None and batt <= pet_config.PET_BATTERY_LOW_V
+            crit_batt = batt is not None and batt <= pet_config.PET_BATTERY_CRITICAL_V
+            # Critical battery: stop wandering and rest to protect the cells (warn once).
+            if crit_batt:
+                if not batt_rested:
+                    print(f"🪫 {identity.name}: battery critical ({batt:.1f}V) — resting to protect the pack.")
+                    voice.say("i'm so tired... i need to rest")
+                    mood.nudge("sleepy")
+                    try:
+                        client.sit()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    batt_rested = True
+                time.sleep(2.0)
+                continue
+            batt_rested = False
+
             with shared.lock:
                 shared.status = status
                 shared.mood_name = mood.current
@@ -393,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
                 steps = _stride_count(mood, chasing)
                 m = mood.update(moved_forward=not antispin_probe, saw_person=saw_person,
                                 saw_new=saw_new, chasing=chasing)
-                resp = client.walk(steps, speed=mood.params().speed, min_clearance_cm=reflex_cm)
+                resp = client.walk(steps, speed=_speed(mood, low_batt), min_clearance_cm=reflex_cm)
                 reflex = bool(resp.status and resp.status.reflex_stopped)
                 if reflex:
                     m = mood.update(reflex=True)
@@ -422,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                 # Turning to face a target is intent, not fear — don't spook the mood.
                 m = mood.update(blocked=(target is None and not forward_clear),
                                 saw_person=saw_person, saw_new=saw_new, chasing=chasing)
-                resp = client.turn(turn, speed=mood.params().speed)
+                resp = client.turn(turn, speed=_speed(mood, low_batt))
                 costmap.apply_motion(turn_deg=turn)
                 commit_ttl -= 1
                 turn_only_streak = 0 if target is not None else turn_only_streak + 1
@@ -449,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                     idle = expressions.idle(m, rng)
                     gesture = idle if expressions.is_inplace(idle) else "none"  # don't drift while idling
                 if gesture != "none":
-                    expressions.express(gesture, client, speed=mood.params().speed, reflex_cm=reflex_cm)
+                    expressions.express(gesture, client, speed=_speed(mood, low_batt), reflex_cm=reflex_cm)
 
             # A little bark/whine on a mood change when no LLM mind is narrating.
             if mood_changed and mind is None and m in _BARKS:
@@ -461,9 +488,10 @@ def main(argv: list[str] | None = None) -> int:
             emote_s = f" {gesture}" if gesture != "none" else ""
             dist_s = f"{dist:.0f}cm" if dist is not None else "--"
             tgt_s = f" ->{target.label}" if target is not None else ""
+            batt_s = (f" batt={batt:.1f}V{'⚠' if low_batt else ''}") if batt is not None else ""
             print(f"[{tick:>3}] {action:<11}{tgt_s:<9}{emote_s:<8} mood={m:<9} "
                   f"clear={'y' if forward_clear else 'n'} want={desired:+.0f} "
-                  f"dist={dist_s} cam={'y' if camera_fused else 'n'} place={place} "
+                  f"dist={dist_s} cam={'y' if camera_fused else 'n'} place={place}{batt_s} "
                   f"-> {resp.status.pose.value if resp.status else '?'}")
             if log_fh:
                 log_fh.write(json.dumps({
@@ -472,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
                     "forward_clear": forward_clear, "camera_fused": camera_fused,
                     "target": target.label if target else None, "chasing": chasing,
                     "place": place, "place_familiarity": world.place_familiarity,
+                    "battery_v": batt, "battery_low": low_batt,
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()
@@ -487,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                     "heard": last_heard,
                     "target": (f"{target.label} ({target.drive})" if target else None),
                     "place": place, "world": world_summary,
+                    "battery_v": batt, "battery_low": low_batt,
                     "costmap": costmap.snapshot(),
                 })
     except KeyboardInterrupt:
