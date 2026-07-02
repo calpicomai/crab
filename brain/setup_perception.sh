@@ -103,10 +103,18 @@ MSG
     exit 1
 fi
 
-# 3) Ultralytics (YOLO). torch is present now, so pip won't reinstall it.
+# 3) Ultralytics (YOLO). torch is present now, so pip won't reinstall it. Pin
+#    numpy<2 in the SAME resolve: a bare `pip install ultralytics` drags numpy 2
+#    back in (its deps re-resolve numpy to latest), which breaks the JetPack
+#    numpy-1.x C-extensions (matplotlib/opencv/torch) with "_ARRAY_API not found".
 echo "== Ultralytics (YOLO) =="
-"$PIP" install ultralytics
-"$PY" -c "import ultralytics; print('ultralytics', ultralytics.__version__)"
+"$PIP" install "numpy<2" ultralytics
+# Guard: if numpy 2 still slipped in (transitively), pin it back to the 1.x ABI.
+if ! "$PY" -c "import numpy,sys; sys.exit(0 if numpy.__version__.startswith('1.') else 1)" 2>/dev/null; then
+    echo "  numpy 2 slipped in past the pin; re-installing numpy<2 (JetPack needs the 1.x ABI) ..."
+    "$PIP" install "numpy<2"
+fi
+"$PY" -c "import ultralytics, numpy; print('ultralytics', ultralytics.__version__, '| numpy', numpy.__version__)"
 
 # 3b) Pre-fetch the YOLO weights so the first /snapshot doesn't block on a download
 #     (or fail with no network). Cache into the repo's data/ dir and point the
@@ -136,37 +144,54 @@ else
 fi
 
 # 4) NanoOWL (open-vocabulary) — OPT-IN (--nanoowl / SETUP_NANOOWL=1). Needs
-#    torch2trt + TensorRT (JetPack) and a built image-encoder engine.
+#    torch2trt + TensorRT (JetPack) and a built image-encoder engine. TensorRT is
+#    a JetPack SYSTEM package, so it must already be importable (the venv is
+#    --system-site-packages). torch2trt/nanoowl can't build or run without it, so
+#    check FIRST and skip cleanly rather than attempt doomed source builds.
 if [ "$NANOOWL" = "1" ]; then
     echo "== NanoOWL (open-vocabulary) =="
-    "$PIP" install transformers
-    # torch2trt + nanoowl from source (into the venv). Idempotent-ish: pip reports
-    # "already satisfied" on a rebuild.
-    tmp="$(mktemp -d)"
-    for repo in torch2trt nanoowl; do
-        if ! "$PY" -c "import $repo" 2>/dev/null; then
-            echo "-- installing $repo from source --"
-            git clone --depth 1 "https://github.com/NVIDIA-AI-IOT/$repo" "$tmp/$repo" \
-                && ( cd "$tmp/$repo" && "$PIP" install . ) \
-                || echo "  WARNING: $repo install failed (needs TensorRT/JetPack) — see notes below."
-        fi
-    done
-    rm -rf "$tmp"
-    # Build the image-encoder TensorRT engine the backend loads.
-    engine="${PERCEPTION_NANOOWL_ENGINE:-$DATA_DIR/owl_image_encoder_patch32.engine}"
-    if [ -f "$engine" ]; then
-        echo "NanoOWL engine already present: $engine"
-    elif "$PY" -c "import nanoowl, torch2trt" 2>/dev/null; then
-        echo "Building NanoOWL image-encoder engine -> $engine (this takes a few minutes) ..."
-        ( cd "$REPO_ROOT" && "$PY" -m nanoowl.build_image_encoder_engine "$engine" ) \
-            && echo "  built $engine" \
-            || echo "  WARNING: engine build failed — check TensorRT is installed (JetPack)."
+    if ! "$PY" -c "import tensorrt" 2>/dev/null; then
+        cat <<MSG
+  TensorRT (python module 'tensorrt') isn't importable in this venv, and NanoOWL
+  needs it (via torch2trt). It ships with JetPack as a SYSTEM package. Install it,
+  make sure brain/.venv is --system-site-packages (re-run brain/setup.sh), then
+  re-run with --nanoowl:
+      sudo apt-get install -y nvidia-tensorrt   # (or the full: sudo apt-get install -y nvidia-jetpack)
+      python3 -c 'import tensorrt; print(tensorrt.__version__)'   # verify on the SYSTEM python
+  Skipping NanoOWL for now — YOLO is installed and works on its own.
+MSG
     else
-        echo "  torch2trt/nanoowl not importable — skipping engine build. Install TensorRT"
-        echo "  (JetPack) and re-run with --nanoowl. See brain/requirements-perception.txt."
+        echo "  TensorRT $("$PY" -c 'import tensorrt; print(tensorrt.__version__)' 2>/dev/null) found."
+        # NanoOWL/OWL-ViT track transformers 4.x; pin <5 to avoid the 5.x API churn.
+        "$PIP" install "transformers>=4.36,<5"
+        # torch2trt + nanoowl from source. --no-build-isolation so the build sees
+        # the system tensorrt (build isolation hides system-site-packages, which is
+        # exactly why a plain build fails with "No module named 'tensorrt'").
+        tmp="$(mktemp -d)"
+        for repo in torch2trt nanoowl; do
+            if ! "$PY" -c "import $repo" 2>/dev/null; then
+                echo "-- installing $repo from source --"
+                git clone --depth 1 "https://github.com/NVIDIA-AI-IOT/$repo" "$tmp/$repo" \
+                    && ( cd "$tmp/$repo" && "$PIP" install --no-build-isolation . ) \
+                    || echo "  WARNING: $repo install failed."
+            fi
+        done
+        rm -rf "$tmp"
+        # Build the image-encoder TensorRT engine the backend loads.
+        engine="${PERCEPTION_NANOOWL_ENGINE:-$DATA_DIR/owl_image_encoder_patch32.engine}"
+        if [ -f "$engine" ]; then
+            echo "NanoOWL engine already present: $engine"
+        elif "$PY" -c "import nanoowl, torch2trt" 2>/dev/null; then
+            echo "Building NanoOWL image-encoder engine -> $engine (this takes a few minutes) ..."
+            ( cd "$REPO_ROOT" && "$PY" -m nanoowl.build_image_encoder_engine "$engine" ) \
+                && echo "  built $engine" \
+                || echo "  WARNING: engine build failed — see the error above."
+        else
+            echo "  torch2trt/nanoowl still not importable after install — see the warnings above."
+        fi
+        echo "  Point the server at it:  PERCEPTION_BACKENDS=yolo,nanoowl "
+        echo "  PERCEPTION_NANOOWL_ENGINE=$engine $PY -m brain.perception.server"
     fi
-    echo "  Point the server at it:  PERCEPTION_BACKENDS=yolo,nanoowl "
-    echo "  PERCEPTION_NANOOWL_ENGINE=$engine $PY -m brain.perception.server"
 fi
 
 echo
