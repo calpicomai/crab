@@ -227,9 +227,22 @@ TORCH_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126 bash brain/setup_percep
 ```
 
 `torch`/`opencv` deliberately aren't pip requirements — on Jetson the PyPI wheels
-are the wrong builds (torch: no CUDA). NanoOWL stays manual (`torch2trt` + a built
-TensorRT engine); see `brain/requirements-perception.txt`. The base subset alone
-runs the server + simulate path anywhere.
+are the wrong builds (torch: no CUDA). The base subset alone runs the server +
+simulate path anywhere.
+
+**Detector weights are fetched for you.** The script pre-caches the **YOLO**
+weights (`yolov8n.pt`, ~6 MB) into `data/` so the first `/snapshot` doesn't stall
+on a download (perception defaults to that cached copy automatically). **NanoOWL**
+(open-vocabulary, needed for thin poles / arbitrary obstacle prompts) is opt-in
+because it needs `torch2trt` + TensorRT (JetPack) and a built engine — enable it
+with:
+
+```bash
+bash brain/setup_perception.sh --nanoowl   # installs torch2trt+nanoowl, builds the engine
+```
+
+If TensorRT isn't present the NanoOWL step warns and skips (YOLO still works); see
+`brain/requirements-perception.txt` for the manual steps.
 
 **JetPack 6.2 torch prerequisites** (the script handles cuDSS automatically):
 - System CUDA must be installed — `sudo apt-get install -y nvidia-jetpack` —
@@ -571,6 +584,21 @@ and point the test at `--base-url http://localhost:8000`.
   sensor seeing the floor/body, or a wiring fault) legitimately blocks forward.
   As a safety net, `PET_ANTISPIN_TICKS` (default 6) forces a reflex-protected
   probe step after that many turn-only cycles so it can't circle indefinitely.
+- **The ultrasonic sensor reads nothing** (`dist=--` in the pet log, or
+  `ultrasonic: no reading` from `brain/run.sh check`). Diagnose it **on the Pi**,
+  no network needed:
+  ```bash
+  robot/.venv/bin/python -m robot.diagnose --sonar        # read 10x, print each value
+  robot/.venv/bin/python -m robot.diagnose --sonar-scan   # find the trig/echo pins
+  ```
+  - If it prints a **SIMULATE** warning, `robot/.venv` can't import `robot_hat` —
+    recreate it with `--system-site-packages` (re-run `robot/setup.sh`).
+  - If it reads `no echo` on the default `D2`/`D3` pins, the module is likely on a
+    different port. Run `--sonar-scan` to find the working pair, then set
+    `PICRAWLER_ULTRASONIC_TRIG` / `PICRAWLER_ULTRASONIC_ECHO` (it's an HC-SR04-style
+    trig/echo module — not the analog/I2C ports).
+  - Intermittent reads → raise `PICRAWLER_ULTRASONIC_PINGS` (default 5; the
+    diagnostic accepts `--pings N`) and re-seat the connector.
 
 ### Movement safety / brownout
 
@@ -600,6 +628,7 @@ robot **elevated and legs clear**:
 cd ~/crab
 robot/.venv/bin/python -m robot.diagnose --all --speed 30   # steps legs 0→3, pausing
 robot/.venv/bin/python -m robot.diagnose --leg 2            # just one leg
+robot/.venv/bin/python -m robot.diagnose --sonar            # (bonus) read the ultrasonic
 ```
 
 Watch each leg move to its **standing** position. If a leg drives to a
