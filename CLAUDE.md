@@ -135,6 +135,14 @@ lives in `brain/perception/types.py` (brain-internal, **not** `shared/`; only th
 camera path constants are shared) and is the perception half of the
 experience-record seam.
 
+**Never fuse fabricated perception into navigation.** `LocalCostmap.integrate_camera`
+skips a snapshot with `simulate:true` and drops any detection whose `source ==
+"dummy"`. The `DummyBackend` emits a *constant* centered "person" every frame; on a
+rig with no real detector, fusing it permanently blocks the forward arc so the
+robot only ever turns — the "spins in circles" bug. A real camera + real detector
+(`yolo`/`nanoowl`) and the sim-world `simblob` backend (`simulate:false`) still fuse
+normally; a dummy/simulate rig just navigates on sonar + reflex.
+
 ## Autonomy (wander/avoid via local costmap) & ultrasonic
 
 The **ultrasonic sensor is on the Pi** (`robot/sensors.py:DistanceSensor`, via
@@ -209,7 +217,11 @@ personality from experience.** Two threads: a fast **body** (continuous reactive
 costmap+reflex control loop with steering **hysteresis** — the fix for the
 stop-and-pan; it is the ONLY thing that commands motion) and a slow **mind** (an
 in-character (V)LM every few seconds that nudges heading + gesture, else a canned
-voice). Design rules to preserve:
+voice). The body also has an **anti-spin escape** (`PET_ANTISPIN_TICKS`): after
+too many consecutive turn-only cycles (boxed in, or a mis-sensing forward sonar)
+it forces one reflex-protected probe step — the Pi reflex aborts the stride if
+it's truly blocked, so a genuinely stuck pet can't circle forever. Design rules
+to preserve:
 
 - **Personality is persisted + emergent, not hardcoded.** `identity.py` stores a
   name + random temperament seed + a `character` self-summary that the brain

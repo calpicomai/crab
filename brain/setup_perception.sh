@@ -11,12 +11,29 @@
 # requirements.txt; ultralytics is pip-safe once torch is present (so it can't
 # pull a CPU torch). ultralytics brings opencv-python for inference — fine, the
 # camera pipeline itself lives on the Pi.
+#
+# Detector weights are fetched too, so the first /snapshot doesn't stall on a
+# download (or need the network at run time):
+#   * YOLO (yolov8n.pt) is always pre-cached into the repo's data/ dir.
+#   * NanoOWL (open-vocab) is opt-in — it needs torch2trt + TensorRT (JetPack) and
+#     a built engine. Enable with `--nanoowl` or SETUP_NANOOWL=1.
+#       bash brain/setup_perception.sh --nanoowl
 set -euo pipefail
 
+NANOOWL="${SETUP_NANOOWL:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --nanoowl) NANOOWL=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
 NODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$NODE_DIR")"
 VENV="$NODE_DIR/.venv"
 PY="$VENV/bin/python"
 PIP="$VENV/bin/pip"
+DATA_DIR="$REPO_ROOT/data"
 
 if [ ! -x "$PY" ]; then
     echo "ERROR: $VENV not found. Run 'bash brain/setup.sh' first (it creates the"
@@ -91,8 +108,66 @@ echo "== Ultralytics (YOLO) =="
 "$PIP" install ultralytics
 "$PY" -c "import ultralytics; print('ultralytics', ultralytics.__version__)"
 
-# NanoOWL (open-vocabulary) stays manual — it needs torch2trt + a built TensorRT
-# engine; see brain/requirements-perception.txt.
+# 3b) Pre-fetch the YOLO weights so the first /snapshot doesn't block on a download
+#     (or fail with no network). Cache into the repo's data/ dir and point the
+#     server at it; ultralytics downloads yolov8n.pt (~6MB) on first instantiation.
+echo "== YOLO weights =="
+mkdir -p "$DATA_DIR"
+YOLO_WEIGHTS="${PERCEPTION_YOLO_WEIGHTS:-yolov8n.pt}"
+if "$PY" - "$DATA_DIR" "$YOLO_WEIGHTS" <<'PY'
+import os, sys, shutil
+data_dir, weights = sys.argv[1], sys.argv[2]
+dest = os.path.join(data_dir, os.path.basename(weights))
+if os.path.exists(dest):
+    print("already cached:", dest); sys.exit(0)
+from ultralytics import YOLO
+os.chdir(data_dir)          # ultralytics downloads a bare name into the CWD
+m = YOLO(weights)           # triggers the download if it's a known model name
+ckpt = getattr(m, "ckpt_path", None) or os.path.join(data_dir, os.path.basename(weights))
+if os.path.abspath(ckpt) != os.path.abspath(dest) and os.path.exists(ckpt):
+    shutil.copy(ckpt, dest)
+print("cached YOLO weights ->", dest if os.path.exists(dest) else ckpt)
+PY
+then
+    echo "  Set PERCEPTION_YOLO_WEIGHTS=$DATA_DIR/$(basename "$YOLO_WEIGHTS") to use the cached copy"
+    echo "  (or just run the server from the repo root; ultralytics also caches by name)."
+else
+    echo "  WARNING: couldn't pre-fetch YOLO weights; they'll download on first /snapshot instead."
+fi
+
+# 4) NanoOWL (open-vocabulary) — OPT-IN (--nanoowl / SETUP_NANOOWL=1). Needs
+#    torch2trt + TensorRT (JetPack) and a built image-encoder engine.
+if [ "$NANOOWL" = "1" ]; then
+    echo "== NanoOWL (open-vocabulary) =="
+    "$PIP" install transformers
+    # torch2trt + nanoowl from source (into the venv). Idempotent-ish: pip reports
+    # "already satisfied" on a rebuild.
+    tmp="$(mktemp -d)"
+    for repo in torch2trt nanoowl; do
+        if ! "$PY" -c "import $repo" 2>/dev/null; then
+            echo "-- installing $repo from source --"
+            git clone --depth 1 "https://github.com/NVIDIA-AI-IOT/$repo" "$tmp/$repo" \
+                && ( cd "$tmp/$repo" && "$PIP" install . ) \
+                || echo "  WARNING: $repo install failed (needs TensorRT/JetPack) — see notes below."
+        fi
+    done
+    rm -rf "$tmp"
+    # Build the image-encoder TensorRT engine the backend loads.
+    engine="${PERCEPTION_NANOOWL_ENGINE:-$DATA_DIR/owl_image_encoder_patch32.engine}"
+    if [ -f "$engine" ]; then
+        echo "NanoOWL engine already present: $engine"
+    elif "$PY" -c "import nanoowl, torch2trt" 2>/dev/null; then
+        echo "Building NanoOWL image-encoder engine -> $engine (this takes a few minutes) ..."
+        ( cd "$REPO_ROOT" && "$PY" -m nanoowl.build_image_encoder_engine "$engine" ) \
+            && echo "  built $engine" \
+            || echo "  WARNING: engine build failed — check TensorRT is installed (JetPack)."
+    else
+        echo "  torch2trt/nanoowl not importable — skipping engine build. Install TensorRT"
+        echo "  (JetPack) and re-run with --nanoowl. See brain/requirements-perception.txt."
+    fi
+    echo "  Point the server at it:  PERCEPTION_BACKENDS=yolo,nanoowl "
+    echo "  PERCEPTION_NANOOWL_ENGINE=$engine $PY -m brain.perception.server"
+fi
 
 echo
 echo "Perception deps ready. Start the server:"

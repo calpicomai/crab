@@ -19,6 +19,12 @@ env/
 crab.env          # per-rig launcher prefs written by brain/run.sh
 .run/             # launcher runtime logs (perception/sim server)
 
+# Model weights / built engines (downloaded by setup_perception.sh, not committed)
+*.pt
+*.engine
+/data/
+perception_out/
+
 # Editor / OS
 .vscode/
 .idea/

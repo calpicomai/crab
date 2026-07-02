@@ -40,8 +40,16 @@ def _split(value: str) -> list[str]:
 # only session, but not alongside the future LLM+Whisper+Piper — unload on demand.
 DETECTOR_BACKENDS: list[str] = _split(os.environ.get("PERCEPTION_BACKENDS", "yolo"))
 
-# YOLO
-YOLO_WEIGHTS: str = os.environ.get("PERCEPTION_YOLO_WEIGHTS", "yolov8n.pt")
+# YOLO. Default to the copy setup_perception.sh pre-fetches into the repo's data/
+# dir if it's there (so no env is needed); else the bare name, which ultralytics
+# downloads on first use.
+def _default_yolo_weights() -> str:
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cached = os.path.join(repo_root, "data", "yolov8n.pt")
+    return cached if os.path.exists(cached) else "yolov8n.pt"
+
+
+YOLO_WEIGHTS: str = os.environ.get("PERCEPTION_YOLO_WEIGHTS", _default_yolo_weights())
 YOLO_CONF: float = float(os.environ.get("PERCEPTION_YOLO_CONF", "0.25"))
 
 # NanoOWL (open-vocabulary). Build the engine with:
