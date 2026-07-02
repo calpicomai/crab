@@ -29,8 +29,17 @@ TTS (the pet's voice): install Piper + fetch a voice model, then point at it:
     # Piper release binary + a .onnx voice from https://github.com/rhasspy/piper
     PET_VOICE=1 PET_VOICE_MODEL=/path/to/voice.onnx ...
 
-On the PI (audio device): plug in a USB mic + speaker and
-    sudo apt install -y alsa-utils
+On the PI (audio device):
+    sudo apt install -y alsa-utils                 # arecord / aplay
+  * SPEAKER = the Robot HAT's onboard speaker (I2S amp). Enable it once with
+    SunFounder's installer so it becomes the default ALSA sink; then plain aplay
+    (what the pet uses) plays through it:
+        git clone https://github.com/sunfounder/robot-hat.git
+        cd robot-hat && sudo bash i2samp.sh       # reboot; may need to run it 2x
+        aplay /usr/share/sounds/alsa/Front_Center.wav   # should play from the HAT
+    Leave PICRAWLER_SPEAKER_DEVICE empty so playback uses that default.
+  * MIC = a USB microphone (the HAT has no mic in). Find it with `arecord -l` and,
+    if it isn't the default, set PICRAWLER_MIC_DEVICE=plughw:<card>,<dev>.
 The pet's voice plays on the Pi by default (PET_AUDIO_SINK=pi); the Pi mic streams
 to the Jetson for Whisper. Everything degrades to text-only if a piece is missing.
 

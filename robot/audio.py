@@ -6,6 +6,11 @@ the Jetson sends. Uses ALSA's ``arecord``/``aplay`` (system tools — no pip dep
 and mirrors the GaitEngine/PiCamera simulate philosophy: if the tools or a device
 aren't there (dev laptop, no USB audio), it drops into ``simulate`` so the link
 still runs (silent mic, no-op speaker).
+
+Speaker note: on the SunFounder Robot HAT the speaker is an onboard I2S amp. Run
+SunFounder's ``i2samp.sh`` once so it becomes the default ALSA sink; then this
+``aplay``-based playback routes to the HAT speaker with the default device (leave
+``PICRAWLER_SPEAKER_DEVICE`` empty). See brain/setup_voice.sh.
 """
 
 from __future__ import annotations

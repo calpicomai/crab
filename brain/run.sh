@@ -31,8 +31,8 @@ if [ "${1:-}" == "--" ]; then shift; EXTRA=("$@"); fi
 
 # ------------------------------------------------------------------ helpers
 ask() {  # ask "Prompt" "default" -> echoes answer (prompt to stderr so $() is clean)
-  local p="$1" d="$2" v; read -r -p "$p [$d]: " v 2>&1; echo "${v:-$d}"; }
-askyn() { local p="$1" d="$2" v; read -r -p "$p (y/n) [$d]: " v 2>&1; v="${v:-$d}"; [[ "$v" =~ ^[Yy] ]] && echo 1 || echo 0; }
+  local p="$1" d="$2" v; read -r -p "$p [$d]: " v; echo "${v:-$d}"; }
+askyn() { local p="$1" d="$2" v; read -r -p "$p (y/n) [$d]: " v; v="${v:-$d}"; [[ "$v" =~ ^[Yy] ]] && echo 1 || echo 0; }
 
 wizard() {
   { echo; echo "First-time setup (saved to crab.env — press Enter for the default):"; } >&2
@@ -79,7 +79,7 @@ if [ -z "$MODE" ]; then
     echo "  4) check      — readiness checklist, no movement"
     echo "  5) reconfigure"
   } >&2
-  read -r -p "pick [1]: " pick 2>&1
+  read -r -p "pick [1]: " pick
   case "${pick:-1}" in
     1|"") MODE=pet ;; 2) MODE=wander ;; 3) MODE=agent ;;
     4) MODE=check ;; 5) wizard; source "$CONF"; MODE=pet ;;
