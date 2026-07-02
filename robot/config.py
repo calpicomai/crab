@@ -76,6 +76,21 @@ REFLEX_ENABLED: bool = os.environ.get("PICRAWLER_REFLEX_ENABLED", "1").strip().l
 }
 REFLEX_STOP_CM: float = float(os.environ.get("PICRAWLER_REFLEX_STOP_CM", "15"))
 
+# --- Audio (mic + speaker on the Pi; STT/TTS compute on the Jetson) -----------
+# The Pi captures mic PCM (streamed to the brain for Whisper) and plays back WAVs
+# the brain sends (Piper TTS). Uses ALSA arecord/aplay; missing tools/device ->
+# simulate. Disable with PICRAWLER_AUDIO_ENABLED=0. Set the ALSA device names
+# (from `arecord -l` / `aplay -l`, e.g. "plughw:1,0") if the defaults are wrong.
+AUDIO_ENABLED: bool = os.environ.get("PICRAWLER_AUDIO_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+MIC_DEVICE: str = os.environ.get("PICRAWLER_MIC_DEVICE", "")
+SPEAKER_DEVICE: str = os.environ.get("PICRAWLER_SPEAKER_DEVICE", "")
+MIC_RATE: int = int(os.environ.get("PICRAWLER_MIC_RATE", "16000"))
+
 # --- Whole-robot simulator (robot/simworld.py) --------------------------------
 # When simulating (no picrawler, or PICRAWLER_SIMULATE=1), optionally back the
 # gait/sonar/camera with a 2D world so the robot actually moves in a space and

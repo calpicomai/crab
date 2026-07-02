@@ -15,12 +15,14 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from shared import (
     ACTION_PATHS,
+    AUDIO_PLAY_PATH,
+    AUDIO_STREAM_PATH,
     CAMERA_FRAME_PATH,
     CAMERA_STREAM_PATH,
     HEALTH_PATH,
@@ -35,6 +37,7 @@ from shared import (
 )
 
 from . import config
+from .audio import PiMic, PiSpeaker
 from .camera import PiCamera
 from .gait import GaitEngine
 from .sensors import DistanceSensor
@@ -74,6 +77,11 @@ distance_sensor = (
 # sensor (disabled / simulate laptop) the reflex stays inert.
 if distance_sensor is not None:
     engine.clearance_fn = distance_sensor.read_cm
+
+# Audio device (optional) — mic captured here + streamed to the brain (Whisper);
+# speaker plays WAVs the brain sends (Piper). Missing ALSA/device -> simulate.
+mic = PiMic(rate=config.MIC_RATE, device=config.MIC_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
+speaker = PiSpeaker(device=config.SPEAKER_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
 
 # --- Simulator world (dev / off-hardware) -------------------------------------
 # When simulating and PICRAWLER_SIM_WORLD=1, back the gait/sonar/camera with a 2D
@@ -141,6 +149,8 @@ def health() -> dict[str, object]:
         "ok": True,
         "simulate": engine.simulate,
         "camera": None if camera is None else {"enabled": True, "simulate": camera.simulate},
+        "audio": None if mic is None else {"enabled": True, "mic_simulate": mic.simulate,
+                                           "speaker_simulate": speaker.simulate if speaker else True},
     }
 
 
@@ -164,6 +174,25 @@ def camera_frame() -> Response:
     if frame is None:
         return Response(status_code=503, content="no frame yet")
     return Response(content=frame, media_type="image/jpeg")
+
+
+@app.get(AUDIO_STREAM_PATH)
+def audio_stream() -> Response:
+    """Raw mic PCM (S16_LE mono @ MIC_RATE) the Jetson pulls for Whisper STT."""
+    if mic is None:
+        return Response(status_code=503, content="audio disabled")
+    return StreamingResponse(mic.stream(), media_type="audio/L16")
+
+
+@app.post(AUDIO_PLAY_PATH)
+async def audio_play(request: Request) -> Response:
+    """Play a WAV (raw bytes in the body) on the Pi's speaker — the pet's voice.
+    The Jetson synthesizes with Piper and POSTs the WAV here."""
+    if speaker is None:
+        return Response(status_code=503, content="audio disabled")
+    data = await request.body()
+    ok = speaker.play(data)
+    return Response(status_code=200 if ok else 503, content=b"", media_type="text/plain")
 
 
 # --------------------------------------------------------------------------- #

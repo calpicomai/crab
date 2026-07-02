@@ -25,6 +25,7 @@ import argparse
 import base64
 import json
 import math
+import queue
 import random
 import sys
 import threading
@@ -32,11 +33,14 @@ import time
 
 import httpx
 
-from shared import CAMERA_FRAME_PATH
+from shared import AUDIO_PLAY_PATH, AUDIO_STREAM_PATH, CAMERA_FRAME_PATH
 
 from .. import config as brain_config
 from ..client import RobotClient
 from ..costmap import LocalCostmap
+from ..dashboard import Dashboard
+from ..hearing import build_ears
+from . import commands
 from . import config as pet_config
 from . import expressions
 from .brain import build_pet_brain
@@ -44,7 +48,6 @@ from .identity import PetIdentity
 from .memory import MemoryStore
 from .mood import Mood
 from .voice import Voice
-from ..dashboard import Dashboard
 
 # Short canned exclamations the body "says" on a mood change when there's no LLM
 # mind narrating — so a voice-enabled pet still barks/whines on its own.
@@ -68,6 +71,7 @@ class _Shared:
         self.thought_id = 0
         self.status = {"pose": "?", "distance_cm": None, "reflex_stopped": False}
         self.mood_name = "curious"   # body publishes; mind reads for its prompt
+        self.heard: str | None = None  # last spoken utterance; mind reads + clears
         self.stop = False
 
 
@@ -95,6 +99,8 @@ def _mind_thread(shared: _Shared, brain, identity: PetIdentity, memory: MemorySt
         with shared.lock:
             status = dict(shared.status)
             mood_name = shared.mood_name
+            status["heard"] = shared.heard   # let the mind react to speech in character
+            shared.heard = None              # consume it
         image = _grab_frame_b64(frame_url)
         try:
             thought = brain.reflect(image, status, identity, mood_name, memory.summary())
@@ -140,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dashboard", action="store_true", help="Push telemetry to the robot's /sim dashboard.")
     parser.add_argument("--voice", action="store_true", help="Speak aloud via Piper TTS (needs piper + a model).")
     parser.add_argument("--no-voice", action="store_true", help="Force voice off.")
+    parser.add_argument("--no-stt", action="store_true", help="Disable spoken-command listening (Whisper).")
     parser.add_argument("--memory-db", default=pet_config.PET_MEMORY_DB, help="Episodic memory SQLite path.")
     parser.add_argument("--identity-file", default=pet_config.PET_IDENTITY_FILE, help="Identity JSON path.")
     parser.add_argument("--log", default=None, help="Append per-cycle experience records as JSONL.")
@@ -160,12 +167,27 @@ def main(argv: list[str] | None = None) -> int:
         enabled=(pet_config.PET_VOICE or args.voice) and not args.no_voice,
         model=pet_config.PET_VOICE_MODEL,
         player=pet_config.PET_VOICE_PLAYER,
+        sink=pet_config.PET_AUDIO_SINK,
+        play_url=client.base_url.rstrip("/") + AUDIO_PLAY_PATH,
     )
     perc = httpx.Client(base_url=args.perception_url.rstrip("/")) if use_camera else None
     log_fh = open(args.log, "a") if args.log else None
     dash = Dashboard(client.base_url, args.dashboard)
     reflex_cm = pet_config.PET_REFLEX_CM
     turn_cap = brain_config.WANDER_TURN_DEG
+
+    # Spoken commands: the Pi's mic streams here; Whisper (on the Jetson) turns it
+    # into text on the ears' own thread, which we queue and drain on the body
+    # thread (so only the body ever commands motion).
+    heard_q: "queue.Queue[str]" = queue.Queue()
+    ears = None
+    if pet_config.PET_STT and not args.no_stt:
+        ears = build_ears(
+            client.base_url.rstrip("/") + AUDIO_STREAM_PATH,
+            pet_config.WHISPER_MODEL, heard_q.put,
+            wake_word=pet_config.PET_WAKE_WORD or None,
+            device=pet_config.WHISPER_DEVICE, compute_type=pet_config.WHISPER_COMPUTE,
+        )
 
     print(f"🐾 Meet {identity.name} — {identity.age_str()}, {', '.join(identity.seed_traits) or 'a mystery'}.")
     print(f"   {identity.character}")
@@ -186,18 +208,49 @@ def main(argv: list[str] | None = None) -> int:
     commit_ttl = 0
     last_thought_id = 0
     prev_mood = mood.current
+    last_heard: str | None = None
     tick = 0
     started = time.monotonic()
     try:
         client.stand()
         if mind is not None:
             mind.start()
+        if ears is not None:
+            ears.start()
         while not shared.stop:
             if args.max_ticks and tick >= args.max_ticks:
                 break
             if args.duration and (time.monotonic() - started) >= args.duration:
                 break
             tick += 1
+
+            # Spoken commands (drained here so motion stays on the body thread).
+            obeyed = False
+            while True:
+                try:
+                    text = heard_q.get_nowait()
+                except queue.Empty:
+                    break
+                last_heard = text
+                with shared.lock:
+                    shared.heard = text          # the mind reacts to it in character
+                cmd = commands.interpret(text)
+                print(f"🗣  heard: {text!r}" + (f" -> {cmd.name}" if cmd else " (free-form)"))
+                if cmd is None:
+                    continue
+                voice.say(cmd.reply)
+                if cmd.mood:
+                    mood.nudge(cmd.mood)
+                if cmd.gesture:
+                    expressions.express(cmd.gesture, client, speed=mood.params().speed, reflex_cm=reflex_cm)
+                if cmd.pose == "sit":
+                    client.sit(); obeyed = True
+                elif cmd.pose == "stand":
+                    client.stand()
+            if obeyed:
+                # Obeyed a sit/stay — hold this beat instead of wandering off.
+                time.sleep(0.5)
+                continue
 
             status = _status_dict(client)
             dist = status["distance_cm"]
@@ -299,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                     "heading": heading, "forward_clear": forward_clear,
                     "reflex": bool(resp.status and resp.status.reflex_stopped),
                     "say": thought.say if thought else None,
+                    "heard": last_heard,
                     "costmap": costmap.snapshot(),
                 })
     except KeyboardInterrupt:
@@ -309,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         shared.stop = True
+        if ears is not None:
+            ears.stop()
         if mind is not None:
             mind.join(timeout=2.0)
         try:

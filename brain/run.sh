@@ -39,9 +39,10 @@ wizard() {
   local host name voice model dash vlm
   host="$(ask '  Robot address (Pi hostname or IP)' "${ROBOT_HOST:-picrawler.local}")"
   name="$(ask '  Name your pet (blank = it names itself)' "${PET_NAME:-}")"
-  voice="$(askyn '  Speak out loud (Piper TTS)?' n)"
+  voice="$(askyn '  Speak out loud (Piper TTS, plays on the Pi)?' n)"
   model=""
   if [ "$voice" = "1" ]; then model="$(ask '    Piper voice model path (.onnx)' "${PET_VOICE_MODEL:-}")"; fi
+  stt="$(askyn '  Listen for spoken commands (mic on the Pi -> Whisper)?' y)"
   dash="$(askyn '  Show the live dashboard at /sim?' y)"
   vlm="$(ask '  VLM server URL (blank = none, canned voice)' "${LLM_BASE_URL:-}")"
   cat > "$CONF" <<EOF
@@ -50,6 +51,7 @@ ROBOT_HOST="$host"
 PET_NAME="$name"
 PET_VOICE="$voice"
 PET_VOICE_MODEL="$model"
+PET_STT="$stt"
 PET_DASHBOARD="$dash"
 LLM_BASE_URL="$vlm"
 EOF
@@ -99,6 +101,11 @@ if [ "$MODE" = "check" ]; then
   echo "Readiness (no motion):"
   url_ok "$BASE/health"          && echo "  ✓ robot server"        || echo "  ✗ robot server"
   url_ok "$BASE/camera/frame"    && echo "  ✓ camera frame"        || echo "  ✗ camera frame"
+  if curl -fsS --max-time 3 "$BASE/health" 2>/dev/null | grep -q '"audio":{'; then
+    echo "  ✓ audio device (Pi mic + speaker)"
+  else
+    echo "  – audio device off (no mic/speaker)"
+  fi
   url_ok "http://localhost:8100/health" && echo "  ✓ perception (:8100)" || echo "  – perception not running (optional)"
   if [ -n "${LLM_BASE_URL:-}" ] && url_ok "${LLM_BASE_URL%/}/models"; then
     echo "  ✓ VLM ($LLM_BASE_URL)"
@@ -143,6 +150,7 @@ case "$MODE" in
   pet)
     [ -n "${PET_NAME:-}" ] && FLAGS+=(--name "$PET_NAME")
     [ "${PET_VOICE:-0}" = "1" ] && FLAGS+=(--voice)
+    [ "${PET_STT:-1}" = "0" ] && FLAGS+=(--no-stt)   # spoken commands off
     [ "${PET_DASHBOARD:-1}" = "1" ] && FLAGS+=(--dashboard)
     [ "$HAS_VLM" = "0" ] && FLAGS+=(--sim)   # canned inner voice when no VLM
     echo; echo "Launching pet ${FLAGS[*]} ${EXTRA[*]:-}"
