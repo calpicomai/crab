@@ -237,6 +237,45 @@ Pi→MJPEG→Jetson→detect link runs off-hardware. A `PerceptionSnapshot` (see
 `brain/perception/types.py`) is the perception half of the future experience
 record.
 
+### Simulator: a whole-robot 2D world + live dashboard (`robot/simworld.py`)
+
+Every component has a `simulate` mode, but by default it's shallow (the sonar
+returns a flat 80 cm, the camera draws an unrelated block), so the robot never
+actually moves in a space. Turn on the **world** and it becomes a real
+off-hardware tester: walk/turn move a virtual robot, the ultrasonic **ray-casts**
+real clearances against obstacles, and the camera renders a first-person view of
+them — so the whole brain (wander/agent/pet) runs end-to-end against an
+environment, with a **live top-down dashboard** in your browser.
+
+```bash
+# on your laptop (no robot, no models needed):
+PICRAWLER_SIMULATE=1 PICRAWLER_SIM_WORLD=1 PICRAWLER_SIM_SCENARIO=poles \
+  robot/.venv/bin/python -m robot.server
+# open http://localhost:8000/sim  — watch it navigate; click the map to drop a pole
+brain/.venv/bin/python -m brain.pet --base-url http://localhost:8000 --sim --dashboard
+```
+
+The **dashboard** (`/sim`) shows the top-down map (robot + heading, path trail,
+sonar cone, obstacles), the live first-person camera, the **costmap histogram**
+the brain sees, and the **pet's inner life** (mood, gesture, evolving character,
+memory, a scrolling speech log) — plus telemetry (pose, clearance, reflex) and a
+clearance sparkline. It's **interactive**: click the map to **drop an obstacle**
+in the robot's path (shift-click to remove), **pause/resume/reset**, or switch
+**scenario** (`poles`/`room`/`corridor`/`slalom`). The brain loops push telemetry
+to it with `--dashboard`.
+
+For the camera→perception→costmap path in sim, run perception with the
+`simblob` detector (finds the rendered obstacle boxes):
+`PERCEPTION_BACKENDS=simblob PERCEPTION_CAMERA_URL=http://localhost:8000/camera/stream
+brain/.venv/bin/python -m brain.perception.server`.
+
+It's a **kinematic, behavior-level** sim (idealized odometry — walk advances a
+fixed stride, turn rotates by the commanded degrees, matching the costmap's
+dead-reckoning); it tests behavior/logic (avoidance, costmap, reflex, moods,
+gestures), **not** servo dynamics or slippage. The `/sim*` endpoints are
+dev-only and not part of the robot↔brain protocol. Config: `PICRAWLER_SIM_WORLD`,
+`PICRAWLER_SIM_SCENARIO`, `PICRAWLER_SIM_STRIDE_CM`.
+
 ### Autonomy: wander + avoid (`brain/wander.py` + `brain/costmap.py`)
 
 The robot's autonomous fallback — it moves on its own and steers around

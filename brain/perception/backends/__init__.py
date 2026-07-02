@@ -23,9 +23,13 @@ def build(name: str) -> DetectorBackend:
         from .nanoowl import NanoOwlBackend
 
         return NanoOwlBackend()
+    if name == "simblob":
+        from .simblob import SimBlobBackend
+
+        return SimBlobBackend()
     raise KeyError(name)
 
 
-AVAILABLE = ("yolo", "nanoowl", "dummy")
+AVAILABLE = ("yolo", "nanoowl", "dummy", "simblob")
 
 __all__ = ["DetectorBackend", "DummyBackend", "build", "AVAILABLE"]

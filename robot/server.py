@@ -16,7 +16,8 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 
 from shared import (
     ACTION_PATHS,
@@ -73,6 +74,23 @@ distance_sensor = (
 # sensor (disabled / simulate laptop) the reflex stays inert.
 if distance_sensor is not None:
     engine.clearance_fn = distance_sensor.read_cm
+
+# --- Simulator world (dev / off-hardware) -------------------------------------
+# When simulating and PICRAWLER_SIM_WORLD=1, back the gait/sonar/camera with a 2D
+# world so the robot actually moves in a space and the sonar sees real obstacles.
+# A live dashboard is served at /sim. Not part of the robot<->brain protocol.
+sim_world = None
+_sim_brain: dict = {}  # latest telemetry pushed by the brain loop, for the dashboard
+if config.SIM_WORLD and engine.simulate:
+    from .simworld import build_scenario
+
+    sim_world = build_scenario(config.SIM_SCENARIO)
+    engine.world = sim_world
+    if distance_sensor is not None:
+        distance_sensor.world = sim_world
+    if camera is not None:
+        camera.world = sim_world
+    logger.info("SIM_WORLD enabled (scenario=%s) — dashboard at /sim", config.SIM_SCENARIO)
 
 
 def _status_with_distance():
@@ -146,6 +164,78 @@ def camera_frame() -> Response:
     if frame is None:
         return Response(status_code=503, content="no frame yet")
     return Response(content=frame, media_type="image/jpeg")
+
+
+# --------------------------------------------------------------------------- #
+# Simulator dashboard + control (dev-only; present only when SIM_WORLD is on).
+# NOT part of the robot<->brain command protocol.
+# --------------------------------------------------------------------------- #
+class ObstacleBody(BaseModel):
+    action: str = "add"           # "add" | "remove"
+    cx: float
+    cy: float
+    r: float = 14.0
+    label: str = "obstacle"
+
+
+class ControlBody(BaseModel):
+    action: str                   # "pause" | "resume" | "reset" | "scenario"
+    scenario: str | None = None
+
+
+@app.get("/sim")
+def sim_dashboard() -> Response:
+    if sim_world is None:
+        return Response(status_code=503, content="sim world disabled (set PICRAWLER_SIM_WORLD=1)")
+    from .sim_view import DASHBOARD_HTML
+
+    return HTMLResponse(DASHBOARD_HTML)
+
+
+@app.get("/sim/state")
+def sim_state() -> dict:
+    if sim_world is None:
+        return {"enabled": False}
+    return {"enabled": True, **sim_world.state(), "brain": _sim_brain}
+
+
+@app.post("/sim/brain")
+def sim_brain(payload: dict) -> dict:
+    """The brain pushes telemetry (mood, gesture, costmap, narration, ...) here."""
+    _sim_brain.clear()
+    _sim_brain.update(payload or {})
+    return {"ok": True}
+
+
+@app.post("/sim/obstacle")
+def sim_obstacle(body: ObstacleBody) -> dict:
+    if sim_world is None:
+        return {"ok": False, "error": "sim disabled"}
+    if body.action == "remove":
+        sim_world.remove_near(body.cx, body.cy)
+    else:
+        sim_world.add_obstacle(body.cx, body.cy, body.r, body.label)
+    return {"ok": True, "obstacles": len(sim_world.obstacles)}
+
+
+@app.post("/sim/control")
+def sim_control(body: ControlBody) -> dict:
+    if sim_world is None:
+        return {"ok": False, "error": "sim disabled"}
+    if body.action == "pause":
+        sim_world.set_paused(True)
+    elif body.action == "resume":
+        sim_world.set_paused(False)
+    elif body.action == "reset":
+        sim_world.reset()
+    elif body.action == "scenario" and body.scenario:
+        from .simworld import build_scenario
+
+        sim_world.clear_obstacles()
+        for o in build_scenario(body.scenario).obstacles:
+            sim_world.add_obstacle(o.cx, o.cy, o.r, o.label)
+        sim_world.reset()
+    return {"ok": True, "paused": sim_world.paused}
 
 
 @app.post(ACTION_PATHS[Action.WALK], response_model=CommandResponse)

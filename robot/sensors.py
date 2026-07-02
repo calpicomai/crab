@@ -38,6 +38,9 @@ class DistanceSensor:
     def __init__(self, trig: str = "D2", echo: str = "D3", simulate: bool = False) -> None:
         self.simulate: bool = bool(simulate) or not _ULTRASONIC_AVAILABLE
         self._sonar = None
+        # Optional 2D sim world (robot/simworld.py). When set, simulate returns the
+        # real ray-cast clearance from the world instead of a flat synthetic value.
+        self.world = None
         if self.simulate:
             logger.warning("DistanceSensor running in SIMULATE mode — synthetic distance")
         else:  # pragma: no cover - requires hardware
@@ -47,6 +50,8 @@ class DistanceSensor:
     def read_cm(self) -> float | None:
         """Latest clearance in cm. None means no echo (treat as clear/unknown)."""
         if self.simulate or self._sonar is None:
+            if self.world is not None:
+                return self.world.sonar()
             return _SIMULATED_CM
         try:  # pragma: no cover - hardware
             # Fewer ping retries -> lower worst-case latency (see config).

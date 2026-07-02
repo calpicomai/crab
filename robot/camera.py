@@ -78,6 +78,9 @@ class PiCamera:
         self._picam2 = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Optional 2D sim world (robot/simworld.py). When set, synthetic frames
+        # render the world's first-person view instead of the placeholder block.
+        self.world = None
 
     # ----------------------------------------------------------------- #
     # Lifecycle
@@ -127,11 +130,15 @@ class PiCamera:
         period = 1.0 / self.fps
         block_w = max(1, self.width // 4)
         while not self._stop.is_set():
-            img = Image.new("RGB", (self.width, self.height), (0, 80, 0))
-            x0 = (tick * 16) % max(1, self.width - block_w)
-            ImageDraw.Draw(img).rectangle(
-                [x0, self.height // 4, x0 + block_w, self.height * 3 // 4], fill=(220, 0, 0)
-            )
+            if self.world is not None:
+                # First-person view of the sim world (obstacles as colored boxes).
+                img = self.world.render_camera(self.width, self.height)
+            else:
+                img = Image.new("RGB", (self.width, self.height), (0, 80, 0))
+                x0 = (tick * 16) % max(1, self.width - block_w)
+                ImageDraw.Draw(img).rectangle(
+                    [x0, self.height // 4, x0 + block_w, self.height * 3 // 4], fill=(220, 0, 0)
+                )
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=self.quality)
             self._buffer.write(buf.getvalue())

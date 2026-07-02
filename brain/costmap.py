@@ -257,6 +257,20 @@ class LocalCostmap:
     # ------------------------------------------------------------------ #
     # Visualization
     # ------------------------------------------------------------------ #
+    def snapshot(self) -> dict:
+        """Structured state for the sim dashboard: per-bin confidence + inflated
+        blocked mask + bin-center bearings, plus the chosen heading. Same data
+        `render_ascii()` shows, in numbers the dashboard can draw."""
+        heading, forward_clear = self.best_heading()
+        return {
+            "centers": [round(c, 1) for c in self._centers],
+            "conf": [round(c, 3) for c in self.conf],
+            "blocked": self._blocked_mask(),
+            "heading": round(heading, 1),
+            "forward_clear": forward_clear,
+            "min_gap": round(self.min_gap, 1),
+        }
+
     def render_ascii(self) -> str:
         """One-line polar bar for logs / the self-test: ``#`` blocked (inflated),
         ``:`` weak evidence, space free; ``^`` marks the chosen heading bin."""
