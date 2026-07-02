@@ -561,6 +561,16 @@ and point the test at `--base-url http://localhost:8000`.
   (re-run `brain/setup.sh`); (b) install `cv2` with GStreamer and the Jetson
   `torch` wheel + `ultralytics` — see [Perception (Jetson)](#perception-jetson).
   `brain/setup.sh` prints which of `cv2` / `torch` / `ultralytics` are visible.
+- **The pet only turns / "spins in circles" and never walks.** The costmap
+  deliberately ignores fabricated perception (a `simulate:true` snapshot and any
+  `source:"dummy"` detection), so this is no longer caused by the `DummyBackend`'s
+  phantom "person" blocking the forward arc. On startup the pet now prints its
+  perception state (`perception: dummy … camera NOT fused` vs `perception: yolo`),
+  and each tick logs `dist=<cm>` — if it still turns a lot, check that `dist`:
+  a forward sonar reading persistently below ~66 cm (a real wall, a mis-aimed
+  sensor seeing the floor/body, or a wiring fault) legitimately blocks forward.
+  As a safety net, `PET_ANTISPIN_TICKS` (default 6) forces a reflex-protected
+  probe step after that many turn-only cycles so it can't circle indefinitely.
 
 ### Movement safety / brownout
 

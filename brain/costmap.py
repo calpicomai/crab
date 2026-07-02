@@ -128,12 +128,23 @@ class LocalCostmap:
     def integrate_camera(self, snapshot: dict) -> None:
         """Write each detection as an arc from its box's left edge to its right
         edge, at a bearing from the pixel x-center and a coarse range from box
-        size. Consumes the perception ``/snapshot`` JSON (PerceptionSnapshot)."""
+        size. Consumes the perception ``/snapshot`` JSON (PerceptionSnapshot).
+
+        Fabricated perception is ignored so it can't create phantom obstacles: a
+        ``simulate`` snapshot carries synthetic frames (no real obstacle info),
+        and the ``dummy`` backend emits a constant centered "person" every frame —
+        fusing either permanently blocks the forward arc and makes the robot spin
+        in circles. A real camera + real detector (yolo/nanoowl) and the sim-world
+        ``simblob`` backend (simulate:false) still fuse normally."""
+        if snapshot.get("simulate"):
+            return
         width = snapshot.get("width") or 0
         height = snapshot.get("height") or 0
         if not width or not height:
             return
         for det in snapshot.get("detections", []):
+            if det.get("source") == "dummy":
+                continue
             box = det.get("box")
             if not box or len(box) != 4:
                 continue

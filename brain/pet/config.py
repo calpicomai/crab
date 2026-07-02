@@ -24,6 +24,11 @@ PET_EVOLVE_EVERY: int = int(os.environ.get("PET_EVOLVE_EVERY", "8"))
 # How many body cycles it commits to a turn direction before reconsidering —
 # steering hysteresis that stops the left-right rock (the "pans side to side").
 PET_HYSTERESIS_TICKS: int = int(os.environ.get("PET_HYSTERESIS_TICKS", "3"))
+# Anti-spin escape: after this many consecutive turn-only cycles with no forward
+# progress, force one reflex-protected probe step so a boxed-in / mis-sensing pet
+# can't circle forever (the Pi reflex still aborts the stride if it's truly
+# blocked). 0 disables the escape.
+PET_ANTISPIN_TICKS: int = int(os.environ.get("PET_ANTISPIN_TICKS", "6"))
 
 # Reflex clearance handed to each walk (Pi aborts the stride below it).
 PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGENT_REFLEX_CM)))

@@ -82,6 +82,29 @@ def _status_dict(client: RobotClient) -> dict:
     return {"pose": st.pose.value, "distance_cm": st.distance_cm, "reflex_stopped": st.reflex_stopped}
 
 
+def _probe_perception(perc: "httpx.Client | None") -> bool:
+    """Print one line about the perception server and return whether its camera
+    will actually feed the costmap. A ``dummy``/``simulate`` backend emits fake
+    boxes we deliberately don't fuse (see costmap.integrate_camera), so say so —
+    the pet then navigates on sonar + reflex, which is correct, not broken."""
+    if perc is None:
+        print("   perception: off (--no-camera) — navigating on sonar + reflex.")
+        return False
+    try:
+        health = perc.get("/health", timeout=2.0).json() or {}
+    except Exception:  # noqa: BLE001 - perception optional
+        print("   perception: unreachable — navigating on sonar + reflex.")
+        return False
+    backends = health.get("backends") or []
+    real = [b for b in backends if b != "dummy"]
+    if health.get("simulate") or not real:
+        print(f"   perception: {backends or 'none'} (fake/simulate) — camera NOT "
+              "fused; navigating on sonar + reflex.")
+        return False
+    print(f"   perception: {', '.join(real)} — camera fused into the costmap.")
+    return True
+
+
 def _grab_frame_b64(url: str) -> str | None:
     try:
         r = httpx.get(url, timeout=3.0)
@@ -192,7 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"🐾 Meet {identity.name} — {identity.age_str()}, {', '.join(identity.seed_traits) or 'a mystery'}.")
     print(f"   {identity.character}")
     print(f"   (robot {client.base_url}; mind: {'canned' if simulate else ('off' if args.no_llm else 'LLM')}; "
-          f"memories so far: {memory.count()})  Elevate the robot for the first run. Ctrl+C to stop.\n")
+          f"memories so far: {memory.count()})  Elevate the robot for the first run. Ctrl+C to stop.")
+    camera_fused = _probe_perception(perc if use_camera else None)
+    print()
 
     mind = None
     if not args.no_llm:
@@ -206,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
 
     commit_dir = 0.0
     commit_ttl = 0
+    turn_only_streak = 0
     last_thought_id = 0
     prev_mood = mood.current
     last_heard: str | None = None
@@ -283,8 +309,18 @@ def main(argv: list[str] | None = None) -> int:
                 last_thought_id = tid
             target = max(-costmap.fov, min(costmap.fov, heading + bias))
 
-            if forward_clear and abs(target) < turn_cap:
-                m = mood.update(moved_forward=True, saw_person=saw_person, saw_new=saw_new)
+            want_walk = forward_clear and abs(target) < turn_cap
+            # Anti-spin: if we've only been turning for too long (boxed in, or a
+            # mis-sensing forward sonar), probe forward once anyway — the Pi reflex
+            # aborts the stride if it's truly blocked, so this can't ram anything.
+            antispin_probe = (
+                not want_walk
+                and pet_config.PET_ANTISPIN_TICKS
+                and turn_only_streak >= pet_config.PET_ANTISPIN_TICKS
+            )
+
+            if want_walk or antispin_probe:
+                m = mood.update(moved_forward=not antispin_probe, saw_person=saw_person, saw_new=saw_new)
                 resp = client.walk(1, speed=mood.params().speed, min_clearance_cm=reflex_cm)
                 reflex = bool(resp.status and resp.status.reflex_stopped)
                 if reflex:
@@ -294,7 +330,12 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     costmap.apply_motion(walked=True)
                 commit_ttl = 0
-                action = "reflex-stop" if reflex else "walk"
+                turn_only_streak = 0
+                if antispin_probe and reflex:
+                    # A real wall really is ahead — explore the other way next.
+                    commit_dir = -commit_dir if commit_dir else 1.0
+                    commit_ttl = pet_config.PET_HYSTERESIS_TICKS
+                action = "reflex-stop" if reflex else ("probe" if antispin_probe else "walk")
             else:
                 # Turn toward the gap, committing to a side (hysteresis) to avoid rocking.
                 if commit_ttl > 0 and commit_dir != 0.0:
@@ -308,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
                 resp = client.turn(turn, speed=mood.params().speed)
                 costmap.apply_motion(turn_deg=turn)
                 commit_ttl -= 1
+                turn_only_streak += 1
                 action = f"turn {turn:+.0f}"
 
             # Emote like a dog: a big signature move the instant the mood changes,
@@ -333,14 +375,16 @@ def main(argv: list[str] | None = None) -> int:
             prev_mood = m
 
             emote_s = f" {gesture}" if gesture != "none" else ""
+            dist_s = f"{dist:.0f}cm" if dist is not None else "--"
             print(f"[{tick:>3}] {action:<12}{emote_s:<9} mood={m:<9} "
                   f"clear={'y' if forward_clear else 'n'} head={heading:+.0f} "
-                  f"bias={bias:+.0f} -> pose={resp.status.pose.value if resp.status else '?'}")
+                  f"bias={bias:+.0f} dist={dist_s} cam={'y' if camera_fused else 'n'} "
+                  f"-> pose={resp.status.pose.value if resp.status else '?'}")
             if log_fh:
                 log_fh.write(json.dumps({
                     "tick": tick, "action": action, "gesture": gesture, "mood": m,
                     "distance_cm": dist, "heading": heading, "bias": bias,
-                    "forward_clear": forward_clear,
+                    "forward_clear": forward_clear, "camera_fused": camera_fused,
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()
@@ -350,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                     "mood": m, "gesture": gesture, "character": identity.character,
                     "memory": memory.count(), "tick": tick, "action": action,
                     "heading": heading, "forward_clear": forward_clear,
+                    "distance_cm": dist, "camera_fused": camera_fused,
                     "reflex": bool(resp.status and resp.status.reflex_stopped),
                     "say": thought.say if thought else None,
                     "heard": last_heard,
