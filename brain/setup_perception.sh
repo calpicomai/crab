@@ -163,7 +163,10 @@ MSG
     else
         echo "  TensorRT $("$PY" -c 'import tensorrt; print(tensorrt.__version__)' 2>/dev/null) found."
         # NanoOWL/OWL-ViT track transformers 4.x; pin <5 to avoid the 5.x API churn.
-        "$PIP" install "transformers>=4.36,<5"
+        # onnx + onnxscript: torch 2.x's torch.onnx.export (which the NanoOWL engine
+        # build calls to emit the ONNX it converts to TensorRT) imports onnxscript
+        # eagerly. numpy<2 kept in the same resolve so onnxscript can't drag it back.
+        "$PIP" install "transformers>=4.36,<5" onnx onnxscript "numpy<2"
         # torch2trt + nanoowl from source. --no-build-isolation so the build sees
         # the system tensorrt (build isolation hides system-site-packages, which is
         # exactly why a plain build fails with "No module named 'tensorrt'").

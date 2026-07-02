@@ -38,9 +38,11 @@ Pillow>=10.0
 #   speed:  yolo export model=yolov8n.pt format=engine  (then set PERCEPTION_YOLO_WEIGHTS=yolov8n.engine)
 #
 # NanoOWL backend (open-vocabulary):
-#   Needs torch, transformers, torch2trt, and TensorRT (JetPack), then nanoowl:
-#     pip install transformers
-#     git clone https://github.com/NVIDIA-AI-IOT/torch2trt && cd torch2trt && python3 setup.py install --user
-#     git clone https://github.com/NVIDIA-AI-IOT/nanoowl  && cd nanoowl  && python3 setup.py develop --user
+#   `bash brain/setup_perception.sh --nanoowl` does all of this for you (it checks
+#   for TensorRT first). By hand it needs torch, TensorRT (JetPack), transformers<5,
+#   onnx + onnxscript (torch.onnx.export uses them), then torch2trt + nanoowl:
+#     pip install "transformers<5" onnx onnxscript
+#     git clone https://github.com/NVIDIA-AI-IOT/torch2trt && cd torch2trt && pip install .
+#     git clone https://github.com/NVIDIA-AI-IOT/nanoowl  && cd nanoowl  && pip install .
 #   Build the image-encoder TensorRT engine (path -> PERCEPTION_NANOOWL_ENGINE):
 #     python3 -m nanoowl.build_image_encoder_engine data/owl_image_encoder_patch32.engine
