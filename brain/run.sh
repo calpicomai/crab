@@ -23,6 +23,11 @@ PY="$VENV/bin/python"
 cd "$REPO_ROOT"
 mkdir -p "$RUN_DIR"
 
+# Make locally-installed tools discoverable at runtime: the Piper binary that
+# setup_voice.sh downloads (so the pet's Voice finds `piper` via shutil.which) and
+# the venv's console scripts.
+export PATH="$NODE_DIR/.piper/piper:$VENV/bin:$PATH"
+
 # --- split off passthrough args (everything after `--`) and an optional mode --
 MODE=""
 EXTRA=()
