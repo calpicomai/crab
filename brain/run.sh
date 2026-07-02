@@ -36,7 +36,7 @@ askyn() { local p="$1" d="$2" v; read -r -p "$p (y/n) [$d]: " v; v="${v:-$d}"; [
 
 wizard() {
   { echo; echo "First-time setup (saved to crab.env — press Enter for the default):"; } >&2
-  local host name voice model dash vlm
+  local host name voice model dash llm_url llm_model
   host="$(ask '  Robot address (Pi hostname or IP)' "${ROBOT_HOST:-picrawler.local}")"
   name="$(ask '  Name your pet (blank = it names itself)' "${PET_NAME:-}")"
   voice="$(askyn '  Speak out loud (Piper TTS, plays on the Pi)?' n)"
@@ -44,7 +44,14 @@ wizard() {
   if [ "$voice" = "1" ]; then model="$(ask '    Piper voice model path (.onnx)' "${PET_VOICE_MODEL:-}")"; fi
   stt="$(askyn '  Listen for spoken commands (mic on the Pi -> Whisper)?' y)"
   dash="$(askyn '  Show the live dashboard at /sim?' y)"
-  vlm="$(ask '  VLM server URL (blank = none, canned voice)' "${LLM_BASE_URL:-}")"
+  # The mind: the local VLM (Ollama). Install it with `bash brain/setup_agent.sh`.
+  llm_url="" llm_model=""
+  if [ "$(askyn '  Use the local VLM (Ollama) for its mind?' y)" = "1" ]; then
+    llm_url="http://localhost:11434/v1"; llm_model="${LLM_MODEL:-qwen2.5vl:3b}"
+  else
+    llm_url="$(ask '    VLM server URL (blank = none, canned voice)' "${LLM_BASE_URL:-}")"
+    [ -n "$llm_url" ] && llm_model="$(ask '    VLM model name' "${LLM_MODEL:-qwen2.5-vl-3b-instruct}")"
+  fi
   cat > "$CONF" <<EOF
 # crab per-rig preferences (git-ignored). Re-run: bash brain/run.sh reconfigure
 ROBOT_HOST="$host"
@@ -53,7 +60,8 @@ PET_VOICE="$voice"
 PET_VOICE_MODEL="$model"
 PET_STT="$stt"
 PET_DASHBOARD="$dash"
-LLM_BASE_URL="$vlm"
+LLM_BASE_URL="$llm_url"
+LLM_MODEL="$llm_model"
 EOF
   echo "  saved $CONF" >&2
 }
@@ -67,6 +75,7 @@ url_ok() { curl -fsS --max-time 3 "$1" >/dev/null 2>&1; }
 source "$CONF"
 export ROBOT_HOST PET_VOICE_MODEL
 [ -n "${LLM_BASE_URL:-}" ] && export LLM_BASE_URL
+[ -n "${LLM_MODEL:-}" ] && export LLM_MODEL
 BASE="http://${ROBOT_HOST}:${ROBOT_PORT:-8000}"
 
 # ------------------------------------------------------------------ menu
@@ -136,10 +145,22 @@ fi
 
 # ------------------------------------------------------------------ VLM detect
 HAS_VLM=0
-if [ -n "${LLM_BASE_URL:-}" ] && url_ok "${LLM_BASE_URL%/}/models"; then
-  HAS_VLM=1; echo "  ✓ VLM found at $LLM_BASE_URL — real voice"
+if [ -n "${LLM_BASE_URL:-}" ]; then
+  # A local Ollama that isn't up yet? Best-effort start it (it installs as a
+  # systemd service, so this is usually already running).
+  if [[ "$LLM_BASE_URL" == *:11434* ]] && ! url_ok "${LLM_BASE_URL%/}/models"; then
+    echo "Starting the local VLM (Ollama) ..."
+    sudo systemctl start ollama 2>/dev/null || (ollama serve >"$RUN_DIR/ollama.log" 2>&1 &) || true
+    for _ in $(seq 1 30); do url_ok "${LLM_BASE_URL%/}/models" && break; sleep 1; done
+  fi
+  url_ok "${LLM_BASE_URL%/}/models" && HAS_VLM=1
+fi
+if [ "$HAS_VLM" = "1" ]; then
+  echo "  ✓ VLM at $LLM_BASE_URL (model ${LLM_MODEL:-?}) — real inner voice"
+elif command -v ollama >/dev/null 2>&1; then
+  echo "  – VLM not answering — canned voice. Is the model pulled?  ollama pull ${LLM_MODEL:-qwen2.5vl:3b}"
 else
-  echo "  – no VLM reachable — canned voice"
+  echo "  – no VLM — canned voice. Install one:  bash brain/setup_agent.sh"
 fi
 
 # ------------------------------------------------------------------ launch

@@ -432,16 +432,24 @@ camera frame, says what it sees and why, and picks ONE high-level action; pass a
 goal to steer it.
 
 ```bash
-# on the Jetson, with a local model server running (see brain/setup_agent.sh):
+# One-time on the Jetson: install deps + a local VLM (Ollama) and pull the model:
+bash brain/setup_agent.sh                    # installs Ollama + pulls qwen2.5vl:3b
+# then:
 brain/.venv/bin/python -m brain.agent.loop                     # free-roam + narrate
 brain/.venv/bin/python -m brain.agent.loop --goal "find a person"
 brain/.venv/bin/python -m brain.agent.loop --sim --max-ticks 5 # canned policy, no model
 ```
 
-- **Backend-agnostic, local, default llama.cpp.** The agent speaks the
-  OpenAI-compatible chat API (`openai` SDK) pointed at a **local** server —
-  `llama-server` from llama.cpp by default (`LLM_BASE_URL=http://localhost:8080/v1`).
-  Swap to Ollama or any compatible server by changing `LLM_BASE_URL`; no cloud.
+- **One-command local VLM (Ollama).** `bash brain/setup_agent.sh` installs Ollama
+  (CUDA-enabled on JetPack) and pulls a small multimodal model (**`qwen2.5vl:3b`**),
+  serving the OpenAI-compatible API at `http://localhost:11434/v1`. `brain/run.sh`
+  then uses it automatically (its wizard offers "use the local VLM"), starting the
+  service if needed and falling back to the canned voice if it's absent.
+- **Backend-agnostic, local, no cloud.** The agent/pet speak the OpenAI-compatible
+  chat API (`openai` SDK) pointed at a **local** server. Ollama is the automated
+  default; llama.cpp `llama-server` (`:8080`) is the alternative — swap with only
+  `LLM_BASE_URL`/`LLM_MODEL`, no code change. (`SETUP_OLLAMA=0` skips the install;
+  `OLLAMA_MODEL=qwen2.5:3b` + `LLM_MULTIMODAL=0` runs a lighter text model.)
 - **Multimodal.** It sends the current camera frame (from the robot's
   `/camera/frame`) as an image to a small VLM (default **Qwen2.5-VL-3B**; SmolVLM2
   is a lighter fallback). Set `LLM_MULTIMODAL=0` with a text model to run on the

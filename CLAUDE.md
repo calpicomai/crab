@@ -197,9 +197,14 @@ tools** (`walk`/`turn`/`stand`/`sit`/`get_status`; `test_leg` is excluded). It
 **free-roams + narrates** by default (no voice yet), with an optional `--goal`.
 
 - **Backend-agnostic, local, no cloud.** It speaks the OpenAI-compatible chat API
-  (`openai` SDK) at `LLM_BASE_URL` — a local `llama-server` by default; swap to
-  Ollama/etc. by config, no code change. `LLM_MULTIMODAL=0` + a text model uses a
-  scene-text summary instead of the image.
+  (`openai` SDK) at `LLM_BASE_URL`, swappable by config with no code change. The
+  **automated default is Ollama** — `bash brain/setup_agent.sh` installs it
+  (CUDA on JetPack) and pulls `qwen2.5vl:3b`, serving `:11434/v1`; `brain/run.sh`
+  points at it and starts it if needed. `llama-server` (llama.cpp, `:8080`) is the
+  manual alternative (`SETUP_OLLAMA=0`). `LLM_MULTIMODAL=0` + a text model uses a
+  scene-text summary instead of the image. The code defaults in
+  `brain/agent/config.py` stay llama.cpp-shaped; Ollama is selected via
+  env/`crab.env`, not by changing those defaults.
 - **Two layers / safety.** The LLM sets slow intent; the **Pi reflex + costmap**
   own real-time safety. Movement tools go through the reflex-protected
   `RobotClient`, and if the LLM is unreachable/errors the tick falls back to one
