@@ -48,6 +48,21 @@ ULTRASONIC_ECHO: str = os.environ.get("PICRAWLER_ULTRASONIC_ECHO", "D3")
 # sensor with `python -m robot.diagnose --sonar` (Pi-local, no network).
 ULTRASONIC_PINGS: int = int(os.environ.get("PICRAWLER_ULTRASONIC_PINGS", "5"))
 
+# Battery voltage monitor (robot_hat), reported on RobotStatus so the brain can
+# slow/rest the pet when it runs low. Best-effort + guarded: prefers robot_hat's own
+# battery reading; falls back to an ADC channel scaled by BATTERY_SCALE; missing
+# robot_hat -> simulate (a healthy synthetic voltage). Disable with
+# PICRAWLER_BATTERY_ENABLED=0. The ADC channel/scale only matter for the fallback
+# path and may need tuning for your board (a 2S pack reads ~6.0-8.4V).
+BATTERY_ENABLED: bool = os.environ.get("PICRAWLER_BATTERY_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+BATTERY_ADC_CHANNEL: str = os.environ.get("PICRAWLER_BATTERY_ADC", "A4")
+BATTERY_SCALE: float = float(os.environ.get("PICRAWLER_BATTERY_SCALE", "3.0"))
+
 # Walk gait selection (see robot/gait.py). "canned" uses picrawler's built-in
 # do_action('forward') — the proven default. "custom" plays picrawler's real
 # forward keyframes via do_step with a tunable stride scale — same motion at

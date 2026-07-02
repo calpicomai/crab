@@ -559,11 +559,19 @@ Honest limits: personality growth is persisted text/tallies, not learned weights
 the world model is *structured + learned* (frequency stats + label fingerprints),
 not a trained neural model or literal consciousness; "where things are" stays loose
 (no metric map/SLAM — the sensors can't support it); and it *pursues* a cat, it
-won't reliably *catch* one. Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`,
+won't reliably *catch* one.
+- **Battery-aware** — the Robot HAT battery voltage rides on `RobotStatus.battery_v`
+  (guarded read on the Pi; `PICRAWLER_BATTERY_*`), and the pet **slows down** below
+  `PET_BATTERY_LOW_V` (caps gait speed to ease the current draw) and **rests** below
+  `PET_BATTERY_CRITICAL_V` — protecting the cells and heading off the brownout. Shown
+  in the tick log (`batt=7.4V⚠`), the dashboard, and `brain/run.sh check`.
+
+Config: `PET_NAME`, `PET_HOME`, `PET_REFLECT_S`,
 `PET_EVOLVE_EVERY`, `PET_HYSTERESIS_TICKS`, `PET_EMOTE`/`PET_EMOTE_CHANCE`,
-`PET_VOICE`/`PET_VOICE_MODEL`/`PET_VOICE_PLAYER`, and the world-model knobs
+`PET_VOICE`/`PET_VOICE_MODEL`/`PET_VOICE_PLAYER`, the world-model knobs
 `PET_CHASE_LABELS`/`PET_INTEREST_LABELS`/`PET_WALK_STEPS_*`/`PET_HEADING_SMOOTH`/
-`PET_FORWARD_DEADBAND_DEG`/`PET_WORLD_DB`, plus the shared LLM/costmap/reflex knobs;
+`PET_FORWARD_DEADBAND_DEG`/`PET_WORLD_DB`, the battery knobs
+`PET_BATTERY_LOW_V`/`PET_BATTERY_CRITICAL_V`/`PET_BATTERY_LOW_SPEED`, plus the shared LLM/costmap/reflex knobs;
 flags `--voice`/`--no-voice`/`--no-emote`/`--world-db`. `wander` remains the plain
 reactive fallback and `brain/agent` the goal-driven agent; `pet` is built on both.
 

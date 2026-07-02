@@ -40,7 +40,7 @@ from . import config
 from .audio import PiMic, PiSpeaker
 from .camera import PiCamera
 from .gait import GaitEngine
-from .sensors import DistanceSensor
+from .sensors import BatterySensor, DistanceSensor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("picrawler.server")
@@ -78,6 +78,18 @@ distance_sensor = (
 if distance_sensor is not None:
     engine.clearance_fn = distance_sensor.read_cm
 
+# Battery voltage monitor (optional) — reported on /status so the brain can slow/rest
+# the pet when the pack runs low. Missing robot_hat -> simulate (healthy voltage).
+battery_sensor = (
+    BatterySensor(
+        channel=config.BATTERY_ADC_CHANNEL,
+        scale=config.BATTERY_SCALE,
+        simulate=config.SIMULATE,
+    )
+    if config.BATTERY_ENABLED
+    else None
+)
+
 # Audio device (optional) — mic captured here + streamed to the brain (Whisper);
 # speaker plays WAVs the brain sends (Piper). Missing ALSA/device -> simulate.
 mic = PiMic(rate=config.MIC_RATE, device=config.MIC_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
@@ -106,6 +118,8 @@ def _status_with_distance():
     status = engine.get_status()
     if distance_sensor is not None:
         status.distance_cm = distance_sensor.read_cm()
+    if battery_sensor is not None:
+        status.battery_v = battery_sensor.read_v()
     return status
 
 
