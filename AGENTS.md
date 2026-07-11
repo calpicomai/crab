@@ -31,7 +31,20 @@ Both venvs expect the repo root as cwd so `import shared` resolves:
 - `robot/.venv` — Pi command server + gait (simulate)
 - `brain/.venv` — client, wander, pet, agent, perception server
 
-### Quick smoke tests
+### Automated smoke test (CI / cloud)
+
+Run the non-interactive test suite after setup — exits 0 on success:
+
+```bash
+bash test_sim.sh          # full check (~30s)
+bash test_sim.sh --quick  # skip pet/agent loops
+```
+
+This is also run in GitHub Actions (`.github/workflows/sim-test.yml`) on every
+PR. It covers costmap self-test, dummy perception, sim-world server, movement
+link, and canned pet/agent loops.
+
+### Interactive emulator
 
 ```bash
 # Full stack (blocking — Ctrl+C to stop)

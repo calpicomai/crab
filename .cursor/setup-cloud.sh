@@ -27,5 +27,6 @@ ensure_venv brain "$REPO_ROOT/brain/requirements.txt"
 brain/.venv/bin/pip install -r brain/requirements-perception.txt -r brain/requirements-agent.txt -q
 
 echo "Cloud environment ready (simulate mode)."
-echo "  Smoke test: bash sim.sh poles"
+echo "  Verify:     bash test_sim.sh"
+echo "  Interactive: bash sim.sh poles"
 echo "  Dashboard:  http://localhost:8000/sim  (with sim server + --dashboard)"
