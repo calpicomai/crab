@@ -2,7 +2,7 @@
 # Non-interactive smoke test for off-hardware / cloud CI.
 #
 # Exercises the simulate stack end-to-end: costmap self-test, dummy perception,
-# sim-world robot server, movement link, pet + agent canned loops.
+# SimWorld virtual body (walk/turn change pose), movement link, pet + agent loops.
 #
 #   bash test_sim.sh              # run all checks (exit 0 = pass)
 #   bash test_sim.sh --quick      # skip pet/agent loops (faster)
@@ -94,6 +94,50 @@ if curl -fsS --max-time 5 http://localhost:8000/sim/state | grep -q '"enabled":t
   pass "sim world /sim/state"
 else
   fail "/sim/state unavailable (is PICRAWLER_SIM_WORLD=1 set?)"
+fi
+
+# Virtual body: walk/turn must change pose in SimWorld (not just log gait).
+POSE_BEFORE="$("$PY" -c "
+import json, urllib.request
+r = json.load(urllib.request.urlopen('http://localhost:8000/sim/state'))
+p = r['robot']
+print(p['x'], p['y'], p['heading'])
+")"
+curl -fsS --max-time 10 -X POST http://localhost:8000/walk \
+  -H 'content-type: application/json' -d '{"steps":2,"speed":50}' >/dev/null
+POSE_AFTER_WALK="$("$PY" -c "
+import json, urllib.request
+r = json.load(urllib.request.urlopen('http://localhost:8000/sim/state'))
+p = r['robot']
+print(p['x'], p['y'], p['heading'])
+")"
+if "$PY" -c "
+import sys
+bx, by, bh = map(float, '''$POSE_BEFORE'''.split())
+ax, ay, ah = map(float, '''$POSE_AFTER_WALK'''.split())
+sys.exit(0 if (abs(ax-bx) > 0.5 or abs(ay-by) > 0.5) else 1)
+"; then
+  pass "virtual body moves on walk (SimWorld pose changed)"
+else
+  fail "virtual body did not move after walk"
+fi
+
+curl -fsS --max-time 10 -X POST http://localhost:8000/turn \
+  -H 'content-type: application/json' -d '{"degrees":45,"speed":50}' >/dev/null
+POSE_AFTER_TURN="$("$PY" -c "
+import json, urllib.request
+r = json.load(urllib.request.urlopen('http://localhost:8000/sim/state'))
+print(r['robot']['heading'])
+")"
+if "$PY" -c "
+import sys
+before = float('''$POSE_BEFORE'''.split()[2])
+after = float('''$POSE_AFTER_TURN''')
+sys.exit(0 if abs(after - before) > 0.5 else 1)
+"; then
+  pass "virtual body turns (SimWorld heading changed)"
+else
+  fail "virtual body heading unchanged after turn"
 fi
 
 CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8000/camera/frame)"

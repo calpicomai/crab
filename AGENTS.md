@@ -8,9 +8,13 @@ made — follow them, do not substitute alternatives.
 Cloud VMs have **no Raspberry Pi or Jetson hardware**. All development and testing
 here runs in **simulate mode**:
 
+- **Virtual body (`SimWorld`)** — enable with `PICRAWLER_SIM_WORLD=1`. A 2D room
+  with pose, obstacles, ray-cast sonar, and a rendered camera. Walk/turn move the
+  robot in the world so wander/pet/agent can navigate for real (kinematic, not
+  servo physics). Live dashboard at **http://localhost:8000/sim**.
 - Robot: `PICRAWLER_SIMULATE=1` (auto-detected when `picrawler`/`robot_hat` missing)
-- Sim world (recommended): `PICRAWLER_SIM_WORLD=1` — ray-cast sonar, 2D map, `/sim` dashboard
-- Brain loops: `--sim` on pet/agent; perception uses the **dummy** backend
+- Brain loops: `--sim` on pet/agent; perception uses the **dummy** backend (or
+  **`simblob`** when pointed at the sim-world camera stream)
 
 ### Setup
 
@@ -41,16 +45,24 @@ bash test_sim.sh --quick  # skip pet/agent loops
 ```
 
 This is also run in GitHub Actions (`.github/workflows/sim-test.yml`) on every
-PR. It covers costmap self-test, dummy perception, sim-world server, movement
-link, and canned pet/agent loops.
+PR. It covers costmap self-test, dummy perception, SimWorld virtual-body motion,
+movement link, and canned pet/agent loops.
 
-### Interactive emulator
+### Interactive emulator (virtual body)
+
+`sim.sh` starts the **SimWorld** virtual body + pet in one command:
 
 ```bash
-# Full stack (blocking — Ctrl+C to stop)
-bash sim.sh poles
+bash sim.sh poles            # scenarios: poles / room / corridor / slalom
+# → http://localhost:8000/sim  (click map to drop obstacles)
+```
 
-# Or step by step:
+Scenarios place poles, walls, and boxes; the pet's body loop navigates with the
+same costmap + reflex stack as on hardware.
+
+Or step by step:
+
+```bash
 PICRAWLER_SIMULATE=1 PICRAWLER_SIM_WORLD=1 robot/.venv/bin/python -m robot.server &
 sleep 2
 curl -fsS http://localhost:8000/health
