@@ -375,7 +375,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 last_target = None
             ctx = WorldModel.context_key(dist, mood.current)
-            world_summary = world.summary(ctx)
+            base_summary = world.summary(ctx)
+            sem = world.semantic_summary()
+            world_summary = f"{base_summary}\n{sem}" if sem and base_summary else (sem or base_summary)
 
             # Periodically "look around": sweep the fixed sonar by turning the body so
             # the costmap (and the dashboard's surroundings map) covers more than the
