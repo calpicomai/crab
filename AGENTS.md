@@ -40,13 +40,18 @@ Both venvs expect the repo root as cwd so `import shared` resolves:
 Run the non-interactive test suite after setup — exits 0 on success:
 
 ```bash
-bash test_sim.sh          # full check (~30s)
-bash test_sim.sh --quick  # skip pet/agent loops
+bash test_sim.sh --unit      # in-code only (~2s): costmap, worldmodel, mock brains
+bash test_sim.sh             # full stack incl. SimWorld virtual body (~30s)
+bash test_sim.sh --quick     # skip pet/agent HTTP loops
 ```
 
-This is also run in GitHub Actions (`.github/workflows/sim-test.yml`) on every
-PR. It covers costmap self-test, dummy perception, SimWorld virtual-body motion,
-movement link, and canned pet/agent loops.
+**Off-body / in-code** (`--unit` or `python -m brain.test_offbody`) tests brain
+logic with no robot server and no SimWorld — mock LLM policies, costmap, world
+model, dummy perception. Use this to iterate on the "mind" without the virtual
+body.
+
+**With virtual body** (`test_sim.sh` without `--unit`, or `bash sim.sh`) runs
+SimWorld so walk/turn change pose and sonar/camera see obstacles.
 
 ### Interactive emulator (virtual body)
 

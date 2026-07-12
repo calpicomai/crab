@@ -5,6 +5,7 @@
 # SimWorld virtual body (walk/turn change pose), movement link, pet + agent loops.
 #
 #   bash test_sim.sh              # run all checks (exit 0 = pass)
+#   bash test_sim.sh --unit       # in-code only — no robot server / SimWorld
 #   bash test_sim.sh --quick      # skip pet/agent loops (faster)
 #
 # Requires: bash .cursor/setup-cloud.sh  (or robot/setup.sh + brain/setup.sh)
@@ -24,7 +25,17 @@ if [ ! -x "$PY" ]; then
 fi
 
 QUICK=0
-if [ "${1:-}" = "--quick" ]; then QUICK=1; fi
+UNIT=0
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=1 ;;
+    --unit) UNIT=1 ;;
+  esac
+done
+
+if [ "$UNIT" -eq 1 ]; then
+  exec "$PY" -m brain.test_offbody
+fi
 
 PASS=0
 FAIL=0

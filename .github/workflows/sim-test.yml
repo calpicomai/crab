@@ -21,5 +21,8 @@ jobs:
       - name: Install dependencies
         run: bash .cursor/setup-cloud.sh
 
+      - name: Run off-body unit tests
+        run: bash test_sim.sh --unit
+
       - name: Run simulate smoke test
         run: bash test_sim.sh
