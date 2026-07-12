@@ -39,6 +39,11 @@ PET_WORLD_QUEUE_LOG: bool = os.environ.get("PET_WORLD_QUEUE_LOG", "").strip().lo
     "1", "true", "yes", "on",
 }
 PET_WORLD_TRAIN_SESSION: str = os.environ.get("PET_WORLD_TRAIN_SESSION", "")
+# Optional tiny MLP for WorldModel.predict() — train on laptop with world_train train-net.
+PET_WORLD_NET: str = os.environ.get(
+    "PET_WORLD_NET",
+    os.path.join(PET_HOME, "world_net.json"),
+)
 # Labels the pet actively CHASES — highest interest, and it stays exciting even when
 # familiar (it never gets bored of cats). Matched as substrings of a detection label
 # (so YOLO "cat" and NanoOWL "a cat" both hit). Comma-separated.

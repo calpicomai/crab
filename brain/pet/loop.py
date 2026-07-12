@@ -515,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
                     "target": target.label if target else None, "chasing": chasing,
                     "place": place, "place_familiarity": world.place_familiarity,
                     "battery_v": batt, "battery_low": low_batt,
+                    "context": ctx,
+                    "reflex": bool(resp.status and resp.status.reflex_stopped),
                     "say": thought.say if (new_thought and thought) else None,
                 }) + "\n")
                 log_fh.flush()

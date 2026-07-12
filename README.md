@@ -596,11 +596,20 @@ What makes it a pet:
   set `WORLD_EMBED_AT_RUNTIME=1` to also embed detector labels and cosine-match
   (small numpy dot product — no VLM per tick). Off by default to save RAM.
 
-  Honest limits: personality growth is persisted text/tallies, not learned weights;
-the world model is *structured + learned* (frequency stats + label fingerprints),
-not a trained neural model or literal consciousness; "where things are" stays loose
-(no metric map/SLAM — the sensors can't support it); and it *pursues* a cat, it
-won't reliably *catch* one.
+  **Neural outcome net** (`brain/pet/world_net.py`): a tiny MLP trained on pet
+  `--log` JSONL or the `outcomes` table predicts reflex/progress probability.
+  Train on the laptop, deploy `world_net.json` with `world.db`:
+
+  ```bash
+  python -m brain.pet.world_train train-net --jsonl run.jsonl
+  python -m brain.pet.world_train deploy --host jetson.local --run
+  ```
+
+  Honest limits: personality growth is still mostly persisted text/tallies; the
+  world model mixes **structured SQLite**, **frozen neural embeddings**, and an
+  optional **tiny learnable MLP** — not a full model-based RL world model or
+  literal consciousness; "where things are" stays loose (no metric map/SLAM);
+  and it *pursues* a cat, it won't reliably *catch* one.
 - **Battery-aware** — the Robot HAT battery voltage rides on `RobotStatus.battery_v`
   (guarded read on the Pi; `PICRAWLER_BATTERY_*`), and the pet **slows down** below
   `PET_BATTERY_LOW_V` (caps gait speed to ease the current draw) and **rests** below
