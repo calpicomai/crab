@@ -587,7 +587,16 @@ What makes it a pet:
   # On Jetson: PET_WORLD_DB=~/.picrawler_pet/world.db bash brain/run.sh pet
   ```
 
-Honest limits: personality growth is persisted text/tallies, not learned weights;
+  **Auto-queue pet runs:** set `PET_WORLD_QUEUE_LOG=1` with `--log` on the robot;
+  when the run ends, lines land in the training queue. On the laptop:
+  `python -m brain.pet.world_train consolidate --session run`.
+
+  **Embeddings** (`nomic-embed-text` via Ollama during laptop `consolidate`) store
+  concept vectors in `world.db`. At runtime the Jetson matches on **keywords first**;
+  set `WORLD_EMBED_AT_RUNTIME=1` to also embed detector labels and cosine-match
+  (small numpy dot product — no VLM per tick). Off by default to save RAM.
+
+  Honest limits: personality growth is persisted text/tallies, not learned weights;
 the world model is *structured + learned* (frequency stats + label fingerprints),
 not a trained neural model or literal consciousness; "where things are" stays loose
 (no metric map/SLAM — the sensors can't support it); and it *pursues* a cat, it

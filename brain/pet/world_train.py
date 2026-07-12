@@ -86,14 +86,19 @@ def cmd_import_jsonl(wm: WorldModel, args) -> int:
     if not path.is_file():
         print(f"Not found: {path}", file=sys.stderr)
         return 1
-    n = 0
-    with path.open() as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                wm.queue_training(session, "jsonl", line, args.note or "")
-                n += 1
+    n = wm.queue_log_file(str(path), session)
     print(f"Queued {n} JSONL records from {path}")
+    return 0
+
+
+def cmd_queue_log(wm: WorldModel, args) -> int:
+    session = _session_name(args)
+    path = Path(args.jsonl)
+    if not path.is_file():
+        print(f"Not found: {path}", file=sys.stderr)
+        return 1
+    n = wm.queue_log_file(str(path), session)
+    print(f"Queued {n} lines (session={session}) — run: consolidate --session {session}")
     return 0
 
 
@@ -189,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     p_j.add_argument("--session", default="default")
     p_j.add_argument("--note", default="")
 
+    p_q = sub.add_parser("queue-log", help="Alias: queue a pet --log JSONL for consolidate")
+    p_q.add_argument("jsonl")
+    p_q.add_argument("--session", default="default")
+
     p_d = sub.add_parser("import-dir", help="Queue all images in a folder")
     p_d.add_argument("directory")
     p_d.add_argument("--session", default="default")
@@ -221,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": cmd_status,
             "add": cmd_add,
             "import-jsonl": cmd_import_jsonl,
+            "queue-log": cmd_queue_log,
             "import-dir": cmd_import_dir,
             "capture": cmd_capture,
             "consolidate": cmd_consolidate,

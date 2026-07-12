@@ -556,6 +556,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"and {world.place_count()} places known.)")
         if log_fh:
             log_fh.close()
+        if args.log and pet_config.PET_WORLD_QUEUE_LOG:
+            from pathlib import Path
+
+            session = pet_config.PET_WORLD_TRAIN_SESSION or Path(args.log).stem
+            try:
+                n = world.queue_log_file(args.log, session)
+                if n:
+                    print(f"  Queued {n} log lines for world training (session={session}). "
+                          f"On laptop: python -m brain.pet.world_train consolidate --session {session}")
+            except Exception:
+                pass
         if perc is not None:
             perc.close()
         memory.close()

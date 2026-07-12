@@ -33,7 +33,8 @@ def _run_cli(wm: WorldModel) -> int:
     def menu() -> None:
         print("\n--- World model ---")
         print("1) Summary   2) Objects   3) Preferences   4) Places   5) Outcomes")
-        print("6) Teach     7) See (simulate)   8) Record outcome   9) LLM teach   q) Quit")
+        print("6) Teach     7) See (simulate)   8) Record outcome   9) LLM teach")
+        print("c) Concepts  p) Pending queue  k) Consolidate(sim)  j) Import JSONL  q) Quit")
         return input("> ").strip().lower()
 
     while True:
@@ -42,6 +43,9 @@ def _run_cli(wm: WorldModel) -> int:
             break
         if choice == "1":
             print(wm.summary())
+            sem = wm.semantic_summary()
+            if sem:
+                print(sem)
         elif choice == "2":
             for o in wm.list_objects():
                 print(f"  {o['label']:20} seen={o['times_seen']:3} drive={o['drive']:8} "
@@ -91,6 +95,31 @@ def _run_cli(wm: WorldModel) -> int:
                 print(f"LLM taught: {spec}")
             except Exception as exc:  # noqa: BLE001
                 print(f"LLM teach failed: {exc}", file=sys.stderr)
+        elif choice == "c":
+            for c in wm.list_concepts():
+                kw = ", ".join(c.get("keywords") or [])[:60]
+                print(f"  {c['canonical']:14} {c['drive']:7} {c.get('category',''):10} {kw}")
+        elif choice == "p":
+            for p in wm.pending_training():
+                print(f"  #{p['id']} [{p['session']}] {p['kind']}: {p['payload'][:50]}")
+        elif choice == "k":
+            sess = input("session [all]: ").strip() or None
+            n = wm.consolidate_training(sess, simulate=True)
+            print(f"Consolidated {n} (simulate)")
+        elif choice == "j":
+            path = input("jsonl path: ").strip()
+            sess = input("session [default]: ").strip() or "default"
+            n = wm.queue_log_file(path, sess) if path.endswith(".jsonl") else 0
+            if not n and path:
+                import json as _json
+                from pathlib import Path
+                p = Path(path)
+                if p.is_file():
+                    for line in p.read_text().splitlines():
+                        if line.strip():
+                            wm.queue_training(sess, "jsonl", line.strip())
+                            n += 1
+            print(f"Queued {n} lines")
         else:
             print("Unknown option")
     return 0
@@ -109,7 +138,7 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
             Binding("q", "quit", "Quit"),
             Binding("r", "refresh", "Refresh"),
             Binding("t", "focus_teach", "Teach"),
-            Binding("l", "focus_llm", "LLM teach"),
+            Binding("c", "focus_consolidate", "Consolidate"),
         ]
 
         def __init__(self, model: WorldModel) -> None:
@@ -129,8 +158,17 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
                     yield DataTable(id="places-table")
                 with TabPane("Outcomes", id="tab-outcomes"):
                     yield DataTable(id="outcomes-table")
-                with TabPane("Teach", id="tab-teach"):
+                with TabPane("Concepts", id="tab-concepts"):
+                    yield DataTable(id="concepts-table")
+                with TabPane("Train", id="tab-train"):
                     with Vertical():
+                        yield Static("[bold]Training session[/] — queue on laptop, LLM consolidate, deploy world.db to Jetson")
+                        yield Input(placeholder="session name [default]", id="in-session")
+                        yield Static(id="train-status")
+                        yield Input(placeholder="import jsonl path → Enter", id="in-jsonl")
+                        yield Input(placeholder="capture: http://picrawler.local:8000 5", id="in-capture")
+                        yield Input(placeholder="consolidate | consolidate --simulate", id="in-consolidate")
+                        yield Static("")
                         yield Static("[bold]Quick teach[/] — label drive valence aliases note")
                         yield Input(placeholder="label", id="in-label")
                         yield Input(placeholder="drive: chase|approach|avoid|neutral", id="in-drive")
@@ -152,17 +190,31 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
                 ("prefs-table", ("label", "drive", "weight", "valence", "aliases", "note")),
                 ("places-table", ("id", "visits", "labels")),
                 ("outcomes-table", ("context", "action", "n", "reflex%", "prog%")),
+                ("concepts-table", ("canonical", "drive", "category", "keywords", "session")),
             ):
                 t = self.query_one(f"#{tid}", DataTable)
                 t.add_columns(*cols)
             self.refresh_all()
 
         def refresh_all(self) -> None:
-            self.query_one("#overview", Static).update(
+            sem = self.wm.semantic_summary(3)
+            body = (
                 f"[bold]Summary[/]\n{self.wm.summary()}\n\n"
                 f"Objects: {self.wm.object_count()}  Places: {self.wm.place_count()}  "
-                f"Taught: {len(self.wm.list_preferences())}"
+                f"Concepts: {self.wm.concept_count()}  Taught: {len(self.wm.list_preferences())}  "
+                f"Pending: {len(self.wm.pending_training())}"
             )
+            if sem:
+                body += f"\n\n{sem}"
+            self.query_one("#overview", Static).update(body)
+            try:
+                pending = len(self.wm.pending_training())
+                self.query_one("#train-status", Static).update(
+                    f"Queue: {pending} pending  |  consolidate then: "
+                    f"python -m brain.pet.world_train deploy --run"
+                )
+            except Exception:
+                pass
             self._fill_table("objects-table", self.wm.list_objects(), lambda o: (
                 o["label"], str(o["times_seen"]), o["drive"], f"{o['interest']:.2f}",
                 f"{o.get('valence', 0):+.1f}", "yes" if o.get("taught") else "",
@@ -178,6 +230,10 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
                 o["context"], o["action"], str(o["tries"]),
                 f"{o['reflex_p']*100:.0f}", f"{o['progress_p']*100:.0f}",
             ))
+            self._fill_table("concepts-table", self.wm.list_concepts(), lambda c: (
+                c["canonical"], c["drive"], c.get("category", ""),
+                ", ".join((c.get("keywords") or [])[:5]), c.get("session", ""),
+            ))
 
         def _fill_table(self, tid: str, rows: list, fn) -> None:
             t = self.query_one(f"#{tid}", DataTable)
@@ -191,8 +247,15 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
         def action_focus_teach(self) -> None:
             self.query_one("#in-label", Input).focus()
 
+        def action_focus_consolidate(self) -> None:
+            self.query_one("#in-consolidate", Input).focus()
+
         def action_focus_llm(self) -> None:
             self.query_one("#in-llm", Input).focus()
+
+        def _session(self) -> str:
+            s = self.query_one("#in-session", Input).value.strip()
+            return s or "default"
 
         def on_input_submitted(self, event: Input.Submitted) -> None:
             iid = event.input.id
@@ -202,6 +265,12 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
                 self._do_see(event.value)
             elif iid == "in-llm":
                 self._do_llm(event.value)
+            elif iid == "in-jsonl":
+                self._do_import_jsonl(event.value)
+            elif iid == "in-capture":
+                self._do_capture(event.value)
+            elif iid == "in-consolidate":
+                self._do_consolidate(event.value)
 
         def _do_teach(self) -> None:
             label = self.query_one("#in-label", Input).value.strip()
@@ -244,6 +313,55 @@ def _run_textual(wm: WorldModel, db_path: str) -> int:
                 self.refresh_all()
             except Exception as exc:  # noqa: BLE001
                 self.notify(f"LLM failed: {exc}", severity="error")
+
+        def _do_import_jsonl(self, path: str) -> None:
+            path = path.strip()
+            if not path:
+                return
+            n = self.wm.queue_log_file(path, self._session())
+            self.notify(f"Queued {n} lines from log")
+            self.refresh_all()
+
+        def _do_capture(self, raw: str) -> None:
+            parts = raw.strip().split()
+            if len(parts) < 1:
+                return
+            url = parts[0]
+            count = int(parts[1]) if len(parts) > 1 else 5
+            try:
+                import httpx
+                import time as _time
+                from pathlib import Path
+
+                sess = self._session()
+                out = Path(pet_config.PET_HOME) / "train_frames" / sess
+                out.mkdir(parents=True, exist_ok=True)
+                saved = 0
+                with httpx.Client(base_url=url.rstrip("/"), timeout=10.0) as client:
+                    for i in range(count):
+                        r = client.get("/camera/frame")
+                        if r.status_code == 200:
+                            p = out / f"frame_{int(_time.time()*1000)}_{i:03d}.jpg"
+                            p.write_bytes(r.content)
+                            self.wm.queue_training(sess, "image", str(p), f"capture {i}")
+                            saved += 1
+                        _time.sleep(0.5)
+                self.notify(f"Captured {saved} frames")
+                self.refresh_all()
+            except Exception as exc:  # noqa: BLE001
+                self.notify(f"Capture failed: {exc}", severity="error")
+
+        def _do_consolidate(self, raw: str) -> None:
+            raw = raw.strip().lower()
+            if not raw.startswith("consolidate"):
+                return
+            sim = "--simulate" in raw
+            try:
+                n = self.wm.consolidate_training(self._session(), simulate=sim)
+                self.notify(f"Consolidated {n} → {self.wm.concept_count()} concepts")
+                self.refresh_all()
+            except Exception as exc:  # noqa: BLE001
+                self.notify(f"Consolidate failed: {exc}", severity="error")
 
     WorldTUI(wm).run()
     return 0

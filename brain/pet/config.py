@@ -33,6 +33,12 @@ PET_ANTISPIN_TICKS: int = int(os.environ.get("PET_ANTISPIN_TICKS", "6"))
 # --- World model (brain/pet/worldmodel.py) ------------------------------------
 # Persistent objects + places + action->outcome learning, grown from experience.
 PET_WORLD_DB: str = os.environ.get("PET_WORLD_DB", os.path.join(PET_HOME, "world.db"))
+# After a pet run with --log, queue JSONL lines into the world training queue (laptop
+# consolidates later with world_train). Off by default on the Jetson.
+PET_WORLD_QUEUE_LOG: bool = os.environ.get("PET_WORLD_QUEUE_LOG", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+PET_WORLD_TRAIN_SESSION: str = os.environ.get("PET_WORLD_TRAIN_SESSION", "")
 # Labels the pet actively CHASES — highest interest, and it stays exciting even when
 # familiar (it never gets bored of cats). Matched as substrings of a detection label
 # (so YOLO "cat" and NanoOWL "a cat" both hit). Comma-separated.
