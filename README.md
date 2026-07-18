@@ -322,11 +322,16 @@ brain/.venv/bin/python -m brain.pet --base-url http://localhost:8000 --sim --das
 The **dashboard** (`/sim`) shows the top-down map (robot + heading, path trail,
 sonar cone, obstacles), the live first-person camera, the **costmap histogram**
 the brain sees, and the **pet's inner life** (mood, gesture, evolving character,
-memory, a scrolling speech log) — plus telemetry (pose, clearance, reflex) and a
-clearance sparkline. It's **interactive**: click the map to **drop an obstacle**
-in the robot's path (shift-click to remove), **pause/resume/reset**, or switch
-**scenario** (`poles`/`room`/`corridor`/`slalom`). The brain loops push telemetry
-to it with `--dashboard`.
+memory, a scrolling speech log) — plus telemetry and a set of **graphs**: a
+clearance sparkline, **battery over time** (with low/critical guide lines), a
+**mood timeline**, an **action histogram** (walk/turn/chase/reflex/rest), a
+**sightings tally** (what it's chased), and a **performance** row — VLM think time,
+perception latency, loop rate, and a **sonar: live · reflex** indicator so you can
+see the ultrasonic reading in real time. On the **real robot** the top-down map
+becomes a **local scan map** (obstacle points at bearing+range, refreshed by the
+pet's periodic look-around). It's **interactive** in sim: click the map to **drop an
+obstacle** (shift-click to remove), **pause/resume/reset**, or switch **scenario**
+(`poles`/`room`/`corridor`/`slalom`). The brain loops push telemetry with `--dashboard`.
 
 For the camera→perception→costmap path in sim, run perception with the
 `simblob` detector (finds the rendered obstacle boxes):

@@ -75,6 +75,7 @@ class _Shared:
         self.mood_name = "curious"   # body publishes; mind reads for its prompt
         self.heard: str | None = None  # last spoken utterance; mind reads + clears
         self.world_summary = ""      # body publishes; mind folds into its prompt
+        self.think_ms = 0.0          # mind writes: how long its last reflect() took
         self.stop = False
 
 
@@ -160,7 +161,10 @@ def _mind_thread(shared: _Shared, brain, identity: PetIdentity, memory: MemorySt
             shared.heard = None              # consume it
         image = _grab_frame_b64(frame_url)
         try:
+            t0 = time.monotonic()
             thought = brain.reflect(image, status, identity, mood_name, memory.summary(), world_summary)
+            with shared.lock:
+                shared.think_ms = round((time.monotonic() - t0) * 1000, 1)   # VLM decision time
         except Exception as exc:  # noqa: BLE001 - LLM hiccup -> stay quiet this beat
             thought = None
             print(f"  ({identity.name}'s mind wandered: {exc})", file=sys.stderr)
@@ -279,6 +283,10 @@ def main(argv: list[str] | None = None) -> int:
     prev_target_label: str | None = None
     batt_rested = False           # latched so we warn/sit once when the battery is critical
     last_heard: str | None = None
+    prev_tick_t: float | None = None   # for the body loop rate (Hz)
+    loop_hz = 0.0
+    perc_ms = None                # perception detect latency (ms), from /snapshot
+    think_ms = 0.0                # VLM decision time (ms), from the mind thread
     tick = 0
     started = time.monotonic()
     try:
@@ -293,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.duration and (time.monotonic() - started) >= args.duration:
                 break
             tick += 1
+            now_t = time.monotonic()
+            loop_hz = (1.0 / (now_t - prev_tick_t)) if prev_tick_t else 0.0
+            prev_tick_t = now_t
 
             # Spoken commands (drained here so motion stays on the body thread).
             obeyed = False
@@ -347,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
                 shared.mood_name = mood.current
                 thought = shared.thought
                 tid = shared.thought_id
+                think_ms = shared.think_ms
 
             costmap.decay()
             costmap.integrate_sonar(dist)
@@ -356,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
                     r = perc.get("/snapshot", timeout=1.0)
                     if r.status_code == 200:
                         snap = r.json()
+                        perc_ms = snap.get("latency_ms")   # perception's own detect time
                         costmap.integrate_camera(snap)
                 except Exception:  # noqa: BLE001 - perception optional
                     snap = None
@@ -529,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
                     "target": (f"{target.label} ({target.drive})" if target else None),
                     "place": place, "world": world_summary,
                     "battery_v": batt, "battery_low": low_batt,
+                    "think_ms": think_ms, "perc_ms": perc_ms, "loop_hz": round(loop_hz, 1),
                     "costmap": costmap.snapshot(),
                 })
     except KeyboardInterrupt:
