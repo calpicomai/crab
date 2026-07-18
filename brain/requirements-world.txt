@@ -1,0 +1,7 @@
+# Laptop-only: world model TUI + optional LLM-assisted teaching.
+# Not needed on the Jetson or in CI — the pet loads world.db read-only at runtime.
+#
+#   pip install -r brain/requirements-world.txt
+#   python -m brain.pet.world_tui
+textual>=0.47
+openai>=1.40

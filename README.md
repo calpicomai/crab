@@ -561,6 +561,21 @@ What makes it a pet:
   levels up when a model is online (canned mode still chases). Chasing steers by the
   target's bearing while the **Pi reflex** keeps it from colliding.
 
+  **Teach it off-body (laptop):** the world model persists in `PET_WORLD_DB`
+  (default `~/.picrawler_pet/world.db`). On your laptop you can grow that file
+  without the robot — taught preferences (chase/approach/avoid, valence, aliases)
+  override the static `PET_CHASE_LABELS` config when the pet runs on the Jetson.
+
+  ```bash
+  bash brain/setup_world.sh
+  python -m brain.pet.world_tui              # Textual TUI — browse + teach
+  python -m brain.pet.world_llm --simulate "Snakes are scary, stay away"
+  python -m brain.pet.worldmodel             # in-code self-test
+  ```
+
+  Copy or point `PET_WORLD_DB` at the taught file on the robot brain when you're
+  ready to deploy what it learned.
+
 Honest limits: personality growth is persisted text/tallies, not learned weights;
 the world model is *structured + learned* (frequency stats + label fingerprints),
 not a trained neural model or literal consciousness; "where things are" stays loose
