@@ -25,14 +25,19 @@ what lets the pet chase a cat instead of only avoiding obstacles.
 * **preferences** — things you *taught* it off-body (TUI / ``teach()``): drive
   (chase/approach/avoid/neutral), weight, valence (-1..1), aliases, notes. Persist
   in SQLite and override the static ``PET_CHASE_LABELS`` config on the Jetson.
+* **concepts** (laptop LLM training) — semantic knowledge with rich **keyword**
+  lists so detector labels like ``tabby cat`` match a taught ``cat`` concept at
+  runtime **without** an LLM on the Jetson. See ``brain/pet/world_train.py``.
 
 Config is read lazily (only when an arg is omitted) so the self-test runs anywhere:
     python -m brain.pet.worldmodel
-    python -m brain.pet.world_tui          # laptop TUI (pip install -r brain/requirements-world.txt)
+    python -m brain.pet.world_tui          # laptop TUI
+    python -m brain.pet.world_train        # laptop training sessions → deploy world.db
 """
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import time
@@ -105,6 +110,7 @@ class WorldModel:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+        self._migrate_db()
 
     def _init_db(self) -> None:
         c = self._conn
@@ -136,10 +142,38 @@ class WorldModel:
                  note TEXT DEFAULT '',
                  taught_ts REAL)"""
         )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS concepts(
+                 canonical TEXT PRIMARY KEY,
+                 category TEXT DEFAULT 'thing',
+                 description TEXT DEFAULT '',
+                 drive TEXT NOT NULL DEFAULT 'approach',
+                 weight REAL NOT NULL DEFAULT 0.6,
+                 valence REAL NOT NULL DEFAULT 0,
+                 keywords TEXT DEFAULT '[]',
+                 aliases TEXT DEFAULT '',
+                 note TEXT DEFAULT '',
+                 session TEXT DEFAULT '',
+                 updated_ts REAL,
+                 embedding TEXT DEFAULT '[]')"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS training_queue(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session TEXT NOT NULL,
+                 kind TEXT NOT NULL,
+                 payload TEXT NOT NULL,
+                 note TEXT DEFAULT '',
+                 created_ts REAL,
+                 processed INTEGER DEFAULT 0)"""
+        )
         c.commit()
 
-    # ------------------------------------------------------------------ #
-    # Detections -> labels / bearings
+    def _migrate_db(self) -> None:
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(concepts)")}
+        if "embedding" not in cols:
+            self._conn.execute("ALTER TABLE concepts ADD COLUMN embedding TEXT DEFAULT '[]'")
+            self._conn.commit()
     # ------------------------------------------------------------------ #
     def _real_detections(self, snapshot: dict) -> list[dict]:
         """Detections worth learning from — drop fabricated (dummy) / simulate ones,
@@ -188,10 +222,53 @@ class WorldModel:
                     return row
         return None
 
+    def _concept_for(self, label: str) -> sqlite3.Row | None:
+        """Match a detector label to an LLM-trained concept (keywords + embeddings)."""
+        from . import world_semantic
+
+        lab = self._norm(label)
+        for row in self._conn.execute("SELECT * FROM concepts"):
+            if lab == row["canonical"]:
+                return row
+        best: sqlite3.Row | None = None
+        best_hits = 0
+        for row in self._conn.execute("SELECT * FROM concepts"):
+            try:
+                keywords = json.loads(row["keywords"] or "[]")
+            except json.JSONDecodeError:
+                keywords = []
+            if world_semantic.label_matches_concept(lab, keywords):
+                hits = sum(1 for k in keywords if k in lab or lab in k)
+                if hits > best_hits:
+                    best, best_hits = row, hits
+        if best is not None:
+            return best
+        try:
+            from . import world_embeddings
+
+            if not world_embeddings.WORLD_EMBED_AT_RUNTIME:
+                return None
+            loaded: list[tuple[sqlite3.Row, list[float]]] = []
+            for row in self._conn.execute("SELECT * FROM concepts"):
+                vec = world_embeddings.parse_embedding(row["embedding"] if "embedding" in row.keys() else None)
+                if vec:
+                    loaded.append((row, vec))
+            if loaded:
+                emb = world_embeddings.best_embedding_match(lab, loaded)
+                if emb is not None:
+                    return emb
+        except Exception:
+            pass
+        return None
+
+    def _learned_for(self, label: str) -> sqlite3.Row | None:
+        """Concept (LLM) beats manual preference for the same label."""
+        return self._concept_for(label) or self._preference_for(label)
+
     def _drive_for(self, label: str) -> str:
-        pref = self._preference_for(label)
-        if pref is not None:
-            return str(pref["drive"])
+        learned = self._learned_for(label)
+        if learned is not None:
+            return str(learned["drive"])
         if self._matches(label, self.chase_labels):
             return "chase"
         if self._matches(label, self.interest_labels):
@@ -199,11 +276,21 @@ class WorldModel:
         return "neutral"
 
     def _valence_for(self, label: str) -> float:
-        pref = self._preference_for(label)
-        if pref is not None:
-            return float(pref["valence"])
+        learned = self._learned_for(label)
+        if learned is not None:
+            return float(learned["valence"])
         row = self._conn.execute("SELECT valence FROM objects WHERE label=?", (self._norm(label),)).fetchone()
         return float(row["valence"]) if row else 0.0
+
+    def _weight(self, label: str) -> float:
+        learned = self._learned_for(label)
+        if learned is not None:
+            return float(learned["weight"])
+        if self._matches(label, self.chase_labels):
+            return 1.0
+        if self._matches(label, self.interest_labels):
+            return 0.6
+        return 0.12
 
     def teach(
         self,
@@ -321,6 +408,154 @@ class WorldModel:
         return out
 
     # ------------------------------------------------------------------ #
+    # LLM semantic concepts + training sessions (laptop)
+    # ------------------------------------------------------------------ #
+    def upsert_concept(self, spec: dict, *, session: str = "", embed_simulate: bool = False) -> None:
+        """Store an LLM-extracted concept and mirror it into preferences for runtime."""
+        from . import world_embeddings
+
+        canonical = self._norm(spec["canonical"])
+        keywords = spec.get("keywords") or []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        kw_json = json.dumps([self._norm(k) for k in keywords if k])
+        aliases = spec.get("aliases") or []
+        alias_s = ",".join(sorted({self._norm(a) for a in aliases if a}))
+        now = time.time()
+        try:
+            vec = world_embeddings.embed_text(
+                world_embeddings.concept_embed_text(spec), simulate=embed_simulate)
+            emb_json = world_embeddings.serialize_embedding(vec)
+        except Exception:
+            emb_json = "[]"
+        self._conn.execute(
+            """INSERT INTO concepts(canonical,category,description,drive,weight,valence,
+                                    keywords,aliases,note,session,updated_ts,embedding)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(canonical) DO UPDATE SET
+                 category=excluded.category, description=excluded.description,
+                 drive=excluded.drive, weight=excluded.weight, valence=excluded.valence,
+                 keywords=excluded.keywords, aliases=excluded.aliases, note=excluded.note,
+                 session=excluded.session, updated_ts=excluded.updated_ts,
+                 embedding=excluded.embedding""",
+            (canonical, spec.get("category", "thing"), spec.get("description", ""),
+             spec["drive"], float(spec["weight"]), float(spec["valence"]),
+             kw_json, alias_s, spec.get("note", ""), session, now, emb_json),
+        )
+        all_aliases = list(dict.fromkeys([self._norm(k) for k in keywords if k] + [self._norm(a) for a in aliases if a]))
+        self.teach(
+            canonical,
+            drive=spec["drive"],
+            weight=float(spec["weight"]),
+            valence=float(spec["valence"]),
+            aliases=[a for a in all_aliases if a != canonical],
+            note=spec.get("description") or spec.get("note", ""),
+        )
+        self._conn.commit()
+
+    def list_concepts(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT canonical,category,description,drive,weight,valence,keywords,note,session "
+            "FROM concepts ORDER BY canonical"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["keywords"] = json.loads(d["keywords"] or "[]")
+            except json.JSONDecodeError:
+                d["keywords"] = []
+            out.append(d)
+        return out
+
+    def queue_training(self, session: str, kind: str, payload: str, note: str = "") -> int:
+        cur = self._conn.execute(
+            "INSERT INTO training_queue(session,kind,payload,note,created_ts,processed) VALUES(?,?,?,?,?,0)",
+            (session.strip(), kind.strip(), payload.strip(), note.strip(), time.time()),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    def pending_training(self, session: str | None = None) -> list[dict]:
+        if session:
+            rows = self._conn.execute(
+                "SELECT id,session,kind,payload,note,created_ts FROM training_queue "
+                "WHERE processed=0 AND session=? ORDER BY id",
+                (session.strip(),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id,session,kind,payload,note,created_ts FROM training_queue "
+                "WHERE processed=0 ORDER BY id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def consolidate_training(self, session: str | None = None, *, simulate: bool = False) -> int:
+        """Process queued training items with the laptop LLM → concepts table."""
+        from . import world_semantic
+
+        pending = self.pending_training(session)
+        done = 0
+        for item in pending:
+            kind, payload, note = item["kind"], item["payload"], item.get("note") or ""
+            try:
+                if kind == "text":
+                    spec = world_semantic.analyze_text(payload + ("\n" + note if note else ""), simulate=simulate)
+                elif kind == "image":
+                    spec = world_semantic.analyze_image(payload, note, simulate=simulate)
+                elif kind == "jsonl":
+                    spec = world_semantic.analyze_jsonl_line(payload, simulate=simulate)
+                else:
+                    spec = world_semantic.analyze_text(f"{kind}: {payload} {note}", simulate=simulate)
+                if spec:
+                    self.upsert_concept(spec, session=item["session"], embed_simulate=simulate)
+            except Exception:
+                continue
+            self._conn.execute("UPDATE training_queue SET processed=1 WHERE id=?", (item["id"],))
+            done += 1
+        self._conn.commit()
+        return done
+
+    def queue_log_file(self, path: str, session: str | None = None) -> int:
+        """Queue every line of a pet/wander --log JSONL file for LLM consolidation."""
+        from pathlib import Path
+
+        from . import config as pet_config
+
+        p = Path(path)
+        if not p.is_file():
+            return 0
+        sess = (session or pet_config.PET_WORLD_TRAIN_SESSION or p.stem).strip() or "default"
+        n = 0
+        with p.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    self.queue_training(sess, "jsonl", line)
+                    n += 1
+        return n
+
+    def semantic_summary(self, limit: int = 6) -> str:
+        """Rich text for the VLM — concept descriptions the pet has learned."""
+        concepts = self.list_concepts()[:limit]
+        if not concepts:
+            return ""
+        lines = []
+        for c in concepts:
+            kw = ", ".join(c["keywords"][:6]) if c.get("keywords") else c["canonical"]
+            lines.append(
+                f"- {c['canonical']} ({c['drive']}, {c['category']}): {c.get('description') or c.get('note','')} "
+                f"[also: {kw}]"
+            )
+        extra = self.concept_count() - len(concepts)
+        if extra > 0:
+            lines.append(f"- …and {extra} more learned concepts")
+        return "Learned world knowledge:\n" + "\n".join(lines)
+
+    def concept_count(self) -> int:
+        return int(self._conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0])
+
+    # ------------------------------------------------------------------ #
     # Observe: update objects + current place
     # ------------------------------------------------------------------ #
     def observe(self, snapshot: dict, status: dict | None = None) -> None:
@@ -384,16 +619,6 @@ class WorldModel:
         row = self._conn.execute("SELECT times_seen FROM objects WHERE label=?", (self._norm(label),)).fetchone()
         return int(row["times_seen"]) if row else 0
 
-    def _weight(self, label: str) -> float:
-        pref = self._preference_for(label)
-        if pref is not None:
-            return float(pref["weight"])
-        if self._matches(label, self.chase_labels):
-            return 1.0
-        if self._matches(label, self.interest_labels):
-            return 0.6
-        return 0.12
-
     def interest(self, label: str) -> float:
         """0..1 how much the pet wants to go to this. Taught chase stays exciting;
         approach fades with familiarity; avoid/neutral score near zero."""
@@ -403,7 +628,7 @@ class WorldModel:
         w = self._weight(label)
         valence = self._valence_for(label)
         valence_boost = 1.0 + 0.25 * valence
-        if drive == "chase" or self._matches(label, self.chase_labels):
+        if drive == "chase":
             return max(0.0, min(1.0, w * valence_boost))
         novelty = 1.0 / (1.0 + 0.5 * self._times_seen(label))
         return max(0.0, min(1.0, w * (0.3 + 0.7 * novelty) * valence_boost))
@@ -569,6 +794,34 @@ def _self_test() -> int:
     wm.teach("snake", drive="chase", valence=0.5, aliases=["python"])
     assert wm.interest("python") > 0.9
     print("  teach: snake chase + alias python")
+
+    # LLM-style concept: keyword generalization at runtime (no LLM on Jetson).
+    wm.upsert_concept({
+        "canonical": "cat", "category": "animal", "drive": "chase", "valence": 0.7, "weight": 1.0,
+        "keywords": ["cat", "tabby", "kitten", "feline", "a cat"],
+        "description": "House cat to greet and chase.",
+    }, session="test", embed_simulate=True)
+    assert wm._drive_for("tabby cat") == "chase"
+    assert wm.interest("a fluffy tabby") > 0.5
+    t2 = wm.salient_target(_snap(640, 480, [("tabby cat", _box_for_bearing(5, hfov), "yolo")]))
+    assert t2 is not None and t2.drive == "chase", t2
+    print("  concept: tabby cat → chase via keywords")
+
+    # Embeddings stored for runtime similarity (simulate = deterministic test vectors).
+    from . import world_embeddings as we
+
+    spec = {
+        "canonical": "roomba", "category": "appliance", "drive": "avoid", "valence": -0.9,
+        "weight": 0.0, "keywords": ["roomba"],
+        "description": "Robot vacuum cleaner loud scary",
+    }
+    wm.upsert_concept(spec, session="test", embed_simulate=True)
+    row = wm._conn.execute("SELECT embedding FROM concepts WHERE canonical='roomba'").fetchone()
+    vec = we.parse_embedding(row["embedding"])
+    assert vec and len(vec) > 8
+    q = we.embed_text(we.concept_embed_text(spec), simulate=True)
+    assert we.cosine(q, vec) > 0.99
+    print("  embedding: stored + cosine self-match")
 
     print("  summary:", wm.summary(context=ctx))
     print("\nAll world-model self-test assertions passed.")

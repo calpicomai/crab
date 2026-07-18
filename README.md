@@ -576,7 +576,33 @@ What makes it a pet:
   Copy or point `PET_WORLD_DB` at the taught file on the robot brain when you're
   ready to deploy what it learned.
 
-Honest limits: personality growth is persisted text/tallies, not learned weights;
+  **LLM-grade training (laptop → robot):** the robot already takes pictures —
+  the Pi camera streams MJPEG and serves JPEG snapshots at `/camera/frame`; the
+  pet can log runs with `--log session.jsonl`. On your laptop, a local LLM (Ollama)
+  turns images + notes + logs into **semantic concepts** (rich keyword lists so
+  ``tabby cat`` matches a taught ``cat`` at runtime **without** an LLM on the Jetson):
+
+  ```bash
+  bash brain/setup_world.sh
+  # Pull live frames from the robot (same LAN):
+  python -m brain.pet.world_train capture --robot http://picrawler.local:8000 --session home
+  python -m brain.pet.world_train add --session home --image cat.jpg --note "Our cat Mittens"
+  python -m brain.pet.world_train import-jsonl --session home pet_run.jsonl
+  python -m brain.pet.world_train consolidate --session home   # needs Ollama on laptop
+  python -m brain.pet.world_train deploy --host jetson.local --run
+  # On Jetson: PET_WORLD_DB=~/.picrawler_pet/world.db bash brain/run.sh pet
+  ```
+
+  **Auto-queue pet runs:** set `PET_WORLD_QUEUE_LOG=1` with `--log` on the robot;
+  when the run ends, lines land in the training queue. On the laptop:
+  `python -m brain.pet.world_train consolidate --session run`.
+
+  **Embeddings** (`nomic-embed-text` via Ollama during laptop `consolidate`) store
+  concept vectors in `world.db`. At runtime the Jetson matches on **keywords first**;
+  set `WORLD_EMBED_AT_RUNTIME=1` to also embed detector labels and cosine-match
+  (small numpy dot product — no VLM per tick). Off by default to save RAM.
+
+  Honest limits: personality growth is persisted text/tallies, not learned weights;
 the world model is *structured + learned* (frequency stats + label fingerprints),
 not a trained neural model or literal consciousness; "where things are" stays loose
 (no metric map/SLAM — the sensors can't support it); and it *pursues* a cat, it

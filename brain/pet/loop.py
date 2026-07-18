@@ -388,7 +388,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 last_target = None
             ctx = WorldModel.context_key(dist, mood.current)
-            world_summary = world.summary(ctx)
+            base_summary = world.summary(ctx)
+            sem = world.semantic_summary()
+            world_summary = f"{base_summary}\n{sem}" if sem and base_summary else (sem or base_summary)
 
             # Periodically "look around": sweep the fixed sonar by turning the body so
             # the costmap (and the dashboard's surroundings map) covers more than the
@@ -568,6 +570,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"and {world.place_count()} places known.)")
         if log_fh:
             log_fh.close()
+        if args.log and pet_config.PET_WORLD_QUEUE_LOG:
+            from pathlib import Path
+
+            session = pet_config.PET_WORLD_TRAIN_SESSION or Path(args.log).stem
+            try:
+                n = world.queue_log_file(args.log, session)
+                if n:
+                    print(f"  Queued {n} log lines for world training (session={session}). "
+                          f"On laptop: python -m brain.pet.world_train consolidate --session {session}")
+            except Exception:
+                pass
         if perc is not None:
             perc.close()
         memory.close()
