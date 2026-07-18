@@ -1,0 +1,24 @@
+{
+  "name": "crab-sim",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "bash .cursor/setup-cloud.sh",
+  "ports": [
+    { "name": "robot-api", "port": 8000 },
+    { "name": "perception", "port": 8100 }
+  ],
+  "terminals": [
+    {
+      "name": "sim robot server",
+      "command": "PICRAWLER_SIMULATE=1 PICRAWLER_SIM_WORLD=1 PICRAWLER_SIM_SCENARIO=poles robot/.venv/bin/python -m robot.server",
+      "description": "Simulated Pi server with live /sim dashboard on port 8000"
+    },
+    {
+      "name": "perception (dummy)",
+      "command": "brain/.venv/bin/python -m brain.perception.server",
+      "description": "Perception HTTP server on port 8100 (dummy backend off-hardware)"
+    }
+  ]
+}

@@ -94,6 +94,7 @@ from your saved answers. Re-run the questions any time with
 
 ```bash
 bash sim.sh                  # then open http://localhost:8000/sim
+bash test_sim.sh             # non-interactive smoke test (CI / cloud agents)
 ```
 
 ## Setup & run (details)
