@@ -25,7 +25,10 @@ Quick start::
     # 5. Deploy to Jetson:
     python -m brain.pet.world_train deploy --host jetson.local
 
-Runtime on the robot uses the enriched ``world.db`` only — no LLM per tick.
+    # 6. Optional: train a tiny outcome neural net from logs or world.db:
+    python -m brain.pet.world_train train-net --jsonl run.jsonl
+
+Runtime on the robot uses the enriched ``world.db`` (+ optional ``world_net.json``).
 """
 
 from __future__ import annotations
@@ -153,6 +156,35 @@ def cmd_consolidate(wm: WorldModel, args) -> int:
     return 0
 
 
+def cmd_train_net(wm: WorldModel, args) -> int:
+    from . import world_net
+
+    out = Path(args.out or pet_config.PET_WORLD_NET)
+    try:
+        if args.jsonl:
+            weights = world_net.train_from_jsonl(args.jsonl, epochs=args.epochs)
+            src = f"JSONL {args.jsonl}"
+        else:
+            rows = [
+                dict(r) for r in wm._conn.execute(  # noqa: SLF001
+                    "SELECT context,action,tries,reflex,progressed FROM outcomes ORDER BY tries DESC LIMIT 500"
+                ).fetchall()
+            ]
+            if not rows:
+                print("No outcomes in world.db — run the pet or pass --jsonl", file=sys.stderr)
+                return 1
+            weights = world_net.train_from_outcomes(rows, epochs=args.epochs)
+            src = f"world.db ({len(rows)} outcome rows)"
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    dest = world_net.save(weights, out)
+    print(f"Trained outcome MLP from {src} → {dest} ({weights['samples']} samples)")
+    sample = world_net.predict(weights, "tight/curious", "walk")
+    print(f"  example tight/curious walk: reflex~{sample['reflex_p']:.0%} progress~{sample['progress_p']:.0%}")
+    return 0
+
+
 def cmd_deploy(_wm: WorldModel, args) -> int:
     db = Path(args.db or pet_config.PET_WORLD_DB).resolve()
     if not db.is_file():
@@ -164,12 +196,19 @@ def cmd_deploy(_wm: WorldModel, args) -> int:
     remote = f"{user}@{host}:{remote_dir}/world.db"
     print("Deploy the trained world model to the Jetson brain:\n")
     print(f"  scp {db} {remote}")
+    net = Path(args.net or pet_config.PET_WORLD_NET).resolve()
+    if net.is_file():
+        print(f"  scp {net} {user}@{host}:{remote_dir}/world_net.json")
     print(f"\nThen on the Jetson:")
     print(f"  export PET_WORLD_DB={remote_dir}/world.db")
+    if net.is_file():
+        print(f"  export PET_WORLD_NET={remote_dir}/world_net.json")
     print(f"  bash brain/run.sh pet")
     if args.run:
         import subprocess
         rc = subprocess.call(["scp", str(db), remote])
+        if rc == 0 and net.is_file():
+            subprocess.call(["scp", str(net), f"{user}@{host}:{remote_dir}/world_net.json"])
         if rc == 0:
             print("Copy complete.")
         return rc
@@ -215,11 +254,17 @@ def main(argv: list[str] | None = None) -> int:
     p_k.add_argument("--session", default=None, help="Session name (default: all pending)")
     p_k.add_argument("--simulate", action="store_true", help="No LLM — canned extraction")
 
+    p_n = sub.add_parser("train-net", help="Train tiny outcome MLP from outcomes or JSONL")
+    p_n.add_argument("--jsonl", default=None, help="Pet --log JSONL (else use world.db outcomes)")
+    p_n.add_argument("--out", default=None, help=f"Weights path (default {pet_config.PET_WORLD_NET})")
+    p_n.add_argument("--epochs", type=int, default=400)
+
     p_dep = sub.add_parser("deploy", help="Print/run scp to copy world.db to Jetson")
     p_dep.add_argument("--host", default=None)
     p_dep.add_argument("--user", default=None)
     p_dep.add_argument("--remote-dir", default=None)
     p_dep.add_argument("--db", default=None)
+    p_dep.add_argument("--net", default=None, help="world_net.json to copy alongside world.db")
     p_dep.add_argument("--run", action="store_true", help="Execute scp (else print instructions)")
 
     args = parser.parse_args(argv)
@@ -234,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             "import-dir": cmd_import_dir,
             "capture": cmd_capture,
             "consolidate": cmd_consolidate,
+            "train-net": cmd_train_net,
             "deploy": cmd_deploy,
         }
         if args.cmd == "capture" and not args.robot:

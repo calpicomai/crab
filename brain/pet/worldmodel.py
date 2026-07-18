@@ -671,11 +671,17 @@ class WorldModel:
         self._conn.commit()
 
     def predict(self, context: str, action: str) -> dict:
-        """Laplace-smoothed outcome estimate for (context, action)."""
+        """Outcome estimate for (context, action): neural net if trained, else Laplace."""
+        from . import world_net
+
+        neural = world_net.predict_if_loaded(context, action)
         row = self._conn.execute(
             "SELECT tries,reflex,progressed FROM outcomes WHERE context=? AND action=?",
             (context, action)).fetchone()
         tries = row["tries"] if row else 0
+        if neural is not None:
+            neural["n"] = tries
+            return neural
         reflex = row["reflex"] if row else 0
         prog = row["progressed"] if row else 0
         return {
