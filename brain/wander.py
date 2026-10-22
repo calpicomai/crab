@@ -157,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
 
     use_camera = config.WANDER_USE_CAMERA and not args.no_camera
     client = RobotClient(base_url=args.base_url)
+    if not client.health().get("simulate", False):
+        client.close()
+        print("Legacy navigation is simulation-only pending motion/result migration. Use brain.pet.")
+        return 2
     perc = httpx.Client(base_url=args.perception_url.rstrip("/")) if use_camera else None
     costmap = LocalCostmap()
     print(f"Wandering via {client.base_url}  (turn_deg={args.turn_deg}, speed={args.speed}, "
@@ -187,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                     print("  (perception unreachable — ultrasonic only)")
                     camera_ok = False
                 elif snap is not None:
-                    costmap.integrate_camera(snap)
+                    costmap.integrate_camera(snap, allow_simulated=True)
 
             heading, forward_clear = costmap.best_heading()
 

@@ -1,83 +1,111 @@
-"""The pet's mood — a small emotional state that shifts with what happens and
-colors both how it talks and how it moves.
-
-Kept deliberately simple and legible: a handful of moods, event-driven
-transitions, and a mapping from mood to motion params + a default gesture. The
-LLM (when present) can nudge the mood via a ``mood_hint``; without it, these
-rules alone give the pet a believable inner life.
-"""
+"""Small, elapsed-time companion state; no random mood or tick-count cycling."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+import time
+from dataclasses import asdict, dataclass
 
-# Recognized moods. `mood_hint`s from the LLM are snapped to the nearest of these.
-MOODS = ("curious", "excited", "playful", "cautious", "startled", "bored", "sleepy")
+MOODS = ("calm", "curious", "excited", "playful", "cautious", "startled", "bored", "sleepy")
 
 
-@dataclass
+@dataclass(frozen=True)
+class Temperament:
+    """Stable interaction preferences. These are never actuator safety limits."""
+    hesitation_s: float = 0.6
+    listen_s: float = 5.0
+    preferred_distance_cm: float = 70.0
+    tempo: float = 1.0
+    curiosity: float = 0.5
+    persistence_s: float = 8.0
+
+    @classmethod
+    def from_traits(cls, traits) -> "Temperament":
+        traits = set(traits or [])
+        reserved = bool(traits & {"shy", "cautious", "skittish", "gentle", "watchful"})
+        lively = bool(traits & {"playful", "bold", "energetic", "mischievous", "brave"})
+        curious = "curious" in traits
+        return cls(hesitation_s=1.0 if reserved else 0.35,
+                   listen_s=6.0 if reserved else 4.0,
+                   preferred_distance_cm=90.0 if reserved else 65.0,
+                   tempo=0.8 if reserved else (1.15 if lively else 1.0),
+                   curiosity=0.75 if curious else (0.6 if lively else 0.4),
+                   persistence_s=10.0 if curious else (6.0 if reserved else 8.0))
+
+
+@dataclass(frozen=True)
 class MoodParams:
-    """How a mood shapes the body."""
-
-    speed: int          # gait speed 1-100
-    explore_bias: float # 0 = timid/slow to commit, 1 = eager to push forward
-    gesture: str        # default expressive gesture for this mood
-
-
-_PARAMS: dict[str, MoodParams] = {
-    "curious":  MoodParams(speed=75, explore_bias=0.8, gesture="tilt"),
-    "excited":  MoodParams(speed=95, explore_bias=1.0, gesture="wiggle"),
-    "playful":  MoodParams(speed=90, explore_bias=0.9, gesture="wiggle"),
-    "cautious": MoodParams(speed=55, explore_bias=0.4, gesture="none"),
-    "startled": MoodParams(speed=60, explore_bias=0.2, gesture="backaway"),
-    "bored":    MoodParams(speed=65, explore_bias=0.6, gesture="none"),
-    "sleepy":   MoodParams(speed=45, explore_bias=0.3, gesture="rest"),
-}
+    speed: int
+    explore_bias: float
+    gesture: str
 
 
 class Mood:
-    """Current mood + event-driven transitions."""
+    def __init__(self, start: str = "calm", *, clock=time.monotonic, traits=None) -> None:
+        self.clock = clock
+        self.temperament = Temperament.from_traits(traits)
+        self.current = start if start in MOODS else "calm"
+        self.engagement = 0.0
+        self.alertness = 0.0
+        self.interactions = 0
+        self._last = clock()
+        self._last_event = self._last
+        self._blocked = False
+        self._play_until = 0.0
 
-    def __init__(self, start: str = "curious") -> None:
-        self.current: str = start if start in _PARAMS else "curious"
-        self._idle_ticks = 0
+    def advance(self, now: float | None = None) -> None:
+        now = self.clock() if now is None else now
+        dt = max(0.0, now - self._last)
+        self._last = max(now, self._last)
+        self.engagement *= math.exp(-dt / 35.0)
+        self.alertness *= math.exp(-dt / 12.0)
+        if self._blocked:
+            self.current = "cautious"
+        elif self.alertness > 0.7:
+            self.current = "startled"
+        elif now < self._play_until:
+            self.current = "playful"
+        elif self.engagement > 0.65:
+            self.current = "excited"
+        elif self.engagement > 0.2:
+            self.current = "curious"
+        elif now - self._last_event >= 120.0:
+            self.current = "sleepy"
+        else:
+            self.current = "calm"
 
-    def params(self) -> MoodParams:
-        return _PARAMS[self.current]
+    def event(self, event: str) -> None:
+        self.advance()
+        if event in {"engagement", "praise", "notice", "play"}:
+            self._last_event = self.clock()
+            self.engagement = min(1.0, self.engagement + (0.45 if event != "notice" else 0.22))
+            self.interactions += int(event != "notice")
+        if event == "play":
+            self._play_until = self.clock() + self.temperament.persistence_s
+        elif event == "startle":
+            self.alertness = 1.0
+        self.advance()
 
     def nudge(self, hint: str | None) -> None:
-        """Let the LLM steer the mood, snapped to a known mood."""
-        if hint:
-            h = hint.strip().lower()
-            if h in _PARAMS:
-                self.current = h
+        """Generated words cannot manufacture grounded events."""
+        self.advance()
 
-    def update(self, *, saw_person: bool = False, saw_new: bool = False,
-               blocked: bool = False, reflex: bool = False, moved_forward: bool = False,
-               chasing: bool = False) -> str:
-        """Transition from sensed events. Returns the (possibly new) mood.
+    def params(self) -> MoodParams:
+        return MoodParams(speed=30, explore_bias=0.0,
+                          gesture="rest" if self.current == "sleepy" else "none")
 
-        Priority: a scare/close call wins, then the thrill of chasing / seeing a
-        person, then curiosity at something new, then boredom creeps in when nothing
-        happens. Idle long enough -> sleepy.
-        """
-        if reflex or blocked:
-            self.current = "startled" if reflex else "cautious"
-            self._idle_ticks = 0
-        elif chasing or saw_person:
-            self.current = "excited"
-            self._idle_ticks = 0
-        elif saw_new:
-            self.current = "curious"
-            self._idle_ticks = 0
-        else:
-            # Nothing notable this tick.
-            self._idle_ticks += 1
-            if self._idle_ticks >= 12:
-                self.current = "sleepy"
-            elif self._idle_ticks >= 6:
-                self.current = "bored"
-            elif self.current in ("startled", "cautious") and moved_forward:
-                # Calm back down to playful once it's moving freely again.
-                self.current = "playful"
+    def update(self, *, saw_person=False, saw_new=False, blocked=False,
+               reflex=False, moved_forward=False, chasing=False) -> str:
+        self._blocked = bool(blocked)
+        if reflex:
+            self.event("startle")
+        elif saw_person or saw_new:
+            self.event("notice")
+        self.advance()
         return self.current
+
+    def snapshot(self) -> dict:
+        self.advance()
+        return {"mood": self.current, "engagement": round(self.engagement, 3),
+                "alertness": round(self.alertness, 3), "interactions": self.interactions,
+                "temperament": asdict(self.temperament)}

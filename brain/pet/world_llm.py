@@ -70,8 +70,12 @@ def parse_teaching(text: str, *, simulate: bool = False) -> dict:
                 "aliases": [], "note": text[:80]}
 
     from openai import OpenAI
+    import httpx
+    from shared.local import require_local_url
 
-    client = OpenAI(base_url=WORLD_LLM_BASE_URL, api_key=WORLD_LLM_API_KEY, timeout=45.0)
+    require_local_url(WORLD_LLM_BASE_URL)
+    client = OpenAI(base_url=WORLD_LLM_BASE_URL, api_key=WORLD_LLM_API_KEY, timeout=45.0,
+                    http_client=httpx.Client(trust_env=False, follow_redirects=False))
     resp = client.chat.completions.create(
         model=WORLD_LLM_MODEL,
         temperature=0.1,

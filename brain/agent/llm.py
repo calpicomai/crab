@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from shared.local import require_local_url
 
 from . import config, tools
 
@@ -69,11 +70,14 @@ class LLMBrain:
         # Imported lazily so the package imports without `openai` installed (the
         # mock path and tests don't need it).
         from openai import OpenAI
+        import httpx
+        require_local_url(config.LLM_BASE_URL)
 
         self._client = OpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,
             timeout=config.LLM_TIMEOUT_S,
+            http_client=httpx.Client(trust_env=False, follow_redirects=False),
         )
 
     def decide(self, image_b64, context_text, goal, status) -> Decision:  # noqa: ANN001

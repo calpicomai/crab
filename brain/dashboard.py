@@ -12,11 +12,14 @@ from __future__ import annotations
 import threading
 
 import httpx
+from shared.local import require_local_url
 
 
 class Dashboard:
     def __init__(self, base_url: str | None, enabled: bool) -> None:
         self.url = (base_url.rstrip("/") + "/sim/brain") if (enabled and base_url) else None
+        if self.url:
+            require_local_url(self.url)
 
     @property
     def enabled(self) -> bool:
@@ -29,6 +32,6 @@ class Dashboard:
 
     def _send(self, state: dict) -> None:
         try:
-            httpx.post(self.url, json=state, timeout=1.0)
+            httpx.post(self.url, json=state, timeout=1.0, trust_env=False, follow_redirects=False)
         except Exception:  # noqa: BLE001 - telemetry is best-effort
             pass

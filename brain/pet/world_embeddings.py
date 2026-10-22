@@ -49,8 +49,12 @@ def embed_text(text: str, *, simulate: bool = False) -> list[float]:
     if simulate:
         return _simulate_vector(text)
     from openai import OpenAI
+    import httpx
+    from shared.local import require_local_url
 
-    client = OpenAI(base_url=WORLD_EMBED_BASE_URL, api_key=WORLD_EMBED_API_KEY, timeout=60.0)
+    require_local_url(WORLD_EMBED_BASE_URL)
+    client = OpenAI(base_url=WORLD_EMBED_BASE_URL, api_key=WORLD_EMBED_API_KEY, timeout=60.0,
+                    http_client=httpx.Client(trust_env=False, follow_redirects=False))
     resp = client.embeddings.create(model=WORLD_EMBED_MODEL, input=text)
     return list(resp.data[0].embedding)
 
