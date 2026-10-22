@@ -11,9 +11,7 @@ import queue
 import threading
 import time
 
-import httpx
-
-from shared import AUDIO_PLAY_PATH, AUDIO_STOP_PATH, AUDIO_STREAM_PATH, COMPANION_EVENTS_PATH
+from shared import AUDIO_PLAY_PATH, AUDIO_STOP_PATH, AUDIO_STREAM_PATH
 from .. import config as brain_config
 from ..client import RobotClient
 from ..dashboard import Dashboard
@@ -22,6 +20,7 @@ from . import commands, config
 from .brain import build_pet_brain
 from .coordinator import Coordinator
 from .identity import PetIdentity
+from .inputs import InputWorker
 from .memory import MemoryStore
 from .voice import Voice
 
@@ -65,55 +64,6 @@ class EventInbox:
                 event, self.urgent = self.urgent, None
                 return event
         return self.normal.get_nowait()
-
-
-class InputWorker:
-    """Blocking capture/HTTP stays off the behavior thread; receipts retain age."""
-    def __init__(self, base_url, perception_url, heard, *, use_camera=True):
-        self.samples = queue.Queue(maxsize=1)
-        self.stop_event = threading.Event()
-        from shared.local import require_local_url
-        self.base_url = require_local_url(base_url)
-        self.perception_url = require_local_url(perception_url)
-        self.heard, self.use_camera = heard, use_camera
-        self.thread = threading.Thread(target=self.run, daemon=True, name="companion-inputs")
-
-    def run(self):
-        with RobotClient(self.base_url, timeout=0.8) as client, httpx.Client(timeout=0.5, trust_env=False, follow_redirects=False) as http:
-            while not self.stop_event.is_set():
-                status, snapshot, reason = None, None, None
-                try:
-                    response = client.get_status()
-                    if response.ok and response.status:
-                        status = response.status.model_dump(mode="json")
-                    else:
-                        reason = response.detail or "robot returned no status"
-                except Exception as exc:
-                    reason = str(exc)[:240]
-                if self.use_camera:
-                    try:
-                        response = http.get(self.perception_url.rstrip("/") + "/snapshot")
-                        response.raise_for_status()
-                        snapshot = response.json()
-                    except Exception:
-                        snapshot = None
-                try:
-                    response = http.get(self.base_url.rstrip("/") + COMPANION_EVENTS_PATH)
-                    response.raise_for_status()
-                    for event in response.json().get("events", []):
-                        if 0 <= time.time() - event.get("timestamp", 0) <= 5:
-                            _latest(self.heard, event)
-                except Exception:
-                    pass
-                _latest(self.samples, (status, snapshot, reason))
-                self.stop_event.wait(0.25)
-
-    def start(self):
-        self.thread.start()
-
-    def close(self):
-        self.stop_event.set()
-        self.thread.join(timeout=2.0)
 
 
 class MindWorker:
@@ -278,10 +228,12 @@ def main(argv=None) -> int:
                     pass
             coordinator.tick()
             now = time.monotonic()
-            if now-last_publish >= 0.25:
+            if now-last_publish >= 0.1:
                 state = coordinator.snapshot()
                 state.update(name=identity.name, character=identity.character, tick=tick,
                              simulate=bool(latest_status.get("simulate")), think_ms=think_ms,
+                             pipeline=inputs.health() if hasattr(inputs, "health") else {},
+                             publisher=dashboard.health() if hasattr(dashboard, "health") else {},
                              audio=voice.health(), hearing=ears.health() if ears else {"available": False, "ignored_reason": "disabled or local Whisper model unavailable"}, mind={"available": mind is not None,
                                  "busy": bool(mind and mind.busy), "failure_reason": mind_error,
                                  "provenance": "simulated" if args.sim else "real"})
@@ -301,6 +253,7 @@ def main(argv=None) -> int:
         if mind:
             mind.close()
         voice.close()
+        dashboard.close()
         client.close()
         control.close()
         memory.close()

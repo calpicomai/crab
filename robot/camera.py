@@ -13,14 +13,15 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import dataclass
 import threading
 import time
 
-from shared.health import InputHealth, unavailable
+from shared.health import InputHealth
 
 logger = logging.getLogger("picrawler.camera")
 
-# Guarded hardware imports. Missing off-Pi -> synthetic frames.
+# Guarded hardware imports. Missing off-Pi -> unavailable unless explicitly simulated.
 try:  # pragma: no cover - depends on deploy target
     from picamera2 import Picamera2
     from picamera2.encoders import JpegEncoder
@@ -33,32 +34,58 @@ except Exception as exc:  # noqa: BLE001 - any failure means "no camera hardware
     logger.info("picamera2 unavailable (%s); camera unavailable without explicit simulation", exc)
 
 
+@dataclass(frozen=True)
+class CameraFrame:
+    """One immutable encoded frame and its matching capture metadata."""
+
+    data: bytes
+    captured_at: float
+    sequence: int
+    provenance: str
+
+
 class _FrameBuffer(io.BufferedIOBase):
     """Holds the latest JPEG frame. Subclasses io.BufferedIOBase because
     picamera2's FileOutput requires the output to be one (this is the same
     pattern as picamera2's own MJPEG-streaming StreamingOutput example)."""
 
-    def __init__(self) -> None:
+    def __init__(self, provenance: str = "unknown") -> None:
         super().__init__()
-        self.frame: bytes | None = None
-        self.captured_at: float | None = None
+        self._latest: CameraFrame | None = None
+        self._sequence = 0
+        self._provenance = provenance
+        self._stopped = False
         self._cond = threading.Condition()
 
     def writable(self) -> bool:
         return True
 
     def write(self, buf) -> int:
+        data = bytes(buf)
         with self._cond:
-            self.frame = bytes(buf)
-            self.captured_at = time.time()
+            if self._stopped:
+                return len(data)
+            self._sequence += 1
+            self._latest = CameraFrame(data, time.time(), self._sequence, self._provenance)
             self._cond.notify_all()
-        return len(buf)
+        return len(data)
 
-    def latest(self, timeout: float = 1.0) -> bytes | None:
+    def snapshot(self, timeout: float = 0.0, after_sequence: int | None = None) -> CameraFrame | None:
         with self._cond:
-            if self.frame is None:
-                self._cond.wait(timeout)
-            return self.frame
+            ready = lambda: self._stopped or (self._latest is not None and (
+                after_sequence is None or self._latest.sequence > after_sequence))
+            self._cond.wait_for(ready, timeout=max(0.0, timeout))
+            return self._latest if ready() and not self._stopped else None
+
+    def reset(self) -> None:
+        with self._cond:
+            self._latest = None
+            self._stopped = False
+
+    def stop(self) -> None:
+        with self._cond:
+            self._stopped = True
+            self._cond.notify_all()
 
 
 class PiCamera:
@@ -78,7 +105,9 @@ class PiCamera:
         self.quality = quality
         self.simulate = bool(simulate)
         self._failure: str | None = "not started"
-        self._buffer = _FrameBuffer()
+        self._buffer = _FrameBuffer("simulated" if self.simulate else "real")
+        self.capture_settings = {"requested_fps": self.fps, "rate_control": "not started",
+                                 "achieved_fps_verified": False}
         self._picam2 = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -90,9 +119,15 @@ class PiCamera:
     # Lifecycle
     # ----------------------------------------------------------------- #
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        if self._picam2 is not None:
+            return
         self._stop.clear()
+        self._buffer.reset()
         if self.simulate:
             self._failure = None
+            self.capture_settings["rate_control"] = "simulated timer"
             logger.warning("PiCamera in SIMULATE mode — serving synthetic frames")
             self._thread = threading.Thread(target=self._run_synthetic, daemon=True)
             self._thread.start()
@@ -102,7 +137,18 @@ class PiCamera:
             return
         try:  # pragma: no cover - requires hardware
             self._picam2 = Picamera2()
-            cfg = self._picam2.create_video_configuration(main={"size": (self.width, self.height)})
+            controls = {}
+            if "FrameDurationLimits" in self._picam2.camera_controls:
+                # Official Picamera2 controls.py maps FrameRate to these equal
+                # microsecond bounds. Only request advertised libcamera controls.
+                period_us = round(1_000_000 / self.fps)
+                controls["FrameDurationLimits"] = (period_us, period_us)
+                self.capture_settings["rate_control"] = "FrameDurationLimits requested; achieved rate unverified"
+            else:
+                self.capture_settings["rate_control"] = "camera does not advertise FrameDurationLimits"
+                logger.warning("%s", self.capture_settings["rate_control"])
+            cfg = self._picam2.create_video_configuration(
+                main={"size": (self.width, self.height)}, controls=controls, queue=False)
             self._picam2.configure(cfg)
             # JpegEncoder is picamera2's MJPEG-streaming encoder. `q` (JPEG quality)
             # is accepted on current versions; fall back if an older one differs.
@@ -125,6 +171,7 @@ class PiCamera:
 
     def stop(self) -> None:
         self._stop.set()
+        self._buffer.stop()
         self._failure = "camera stopped"
         if self._picam2 is not None:  # pragma: no cover - hardware
             try:
@@ -160,33 +207,53 @@ class PiCamera:
             img.save(buf, format="JPEG", quality=self.quality)
             self._buffer.write(buf.getvalue())
             tick += 1
-            time.sleep(period)
+            self._stop.wait(period)
 
     # ----------------------------------------------------------------- #
     # Frame access
     # ----------------------------------------------------------------- #
     def get_frame(self, timeout: float = 1.0) -> bytes | None:
         """Latest fresh JPEG bytes, or None on missing/stale/failed capture."""
-        frame = self._buffer.latest(timeout)
-        return frame if self.health().fresh() else None
+        frame = self.get_snapshot(timeout)
+        return frame.data if frame is not None else None
+
+    def get_snapshot(self, timeout: float = 0.0, after_sequence: int | None = None) -> CameraFrame | None:
+        """Return matching bytes/timestamp/sequence atomically, without a frame queue."""
+        frame = self._buffer.snapshot(timeout, after_sequence)
+        return frame if frame is not None and self._frame_health(frame).fresh() else None
 
     def health(self) -> InputHealth:
-        stamp = self._buffer.captured_at
+        return self._frame_health(self._buffer.snapshot())
+
+    def _frame_health(self, frame: CameraFrame | None) -> InputHealth:
+        stamp = frame.captured_at if frame is not None else None
         return InputHealth(available=stamp is not None and self._failure is None,
                            provenance="simulated" if self.simulate else "real",
                            captured_at=stamp, received_at=stamp, source="pi.camera",
                            max_age_s=2, failure_reason=self._failure)
 
     def mjpeg_frames(self):
-        """Yield multipart/x-mixed-replace chunks for a streaming HTTP response."""
+        """Send each selected capture once; slow consumers skip intermediate frames.
+
+        This bounds the application queue, not bytes already buffered by HTTP,
+        the OS or a browser. Dashboard clients should use serial JPEG pulls.
+        """
         boundary = b"--frame\r\n"
         period = 1.0 / self.fps
+        sequence = 0
+        next_send = 0.0
         while not self._stop.is_set():
-            frame = self.get_frame()
+            if self._stop.wait(max(0.0, next_send - time.monotonic())):
+                return
+            frame = self._buffer.snapshot(timeout=1.0, after_sequence=sequence)
             if frame is None:
-                time.sleep(0.05)
                 continue
-            metadata = (f"X-Crab-Captured-At: {self._buffer.captured_at}\r\n"
-                        f"X-Crab-Provenance: {'simulated' if self.simulate else 'real'}\r\n").encode()
-            yield boundary + b"Content-Type: image/jpeg\r\n" + metadata + b"\r\n" + frame + b"\r\n"
-            time.sleep(period)
+            sequence = frame.sequence
+            if not self._frame_health(frame).fresh() or self._stop.is_set():
+                continue
+            metadata = (f"Content-Length: {len(frame.data)}\r\n"
+                        f"X-Crab-Captured-At: {frame.captured_at}\r\n"
+                        f"X-Crab-Provenance: {frame.provenance}\r\n"
+                        f"X-Crab-Sequence: {frame.sequence}\r\n").encode()
+            next_send = time.monotonic() + period
+            yield boundary + b"Content-Type: image/jpeg\r\n" + metadata + b"\r\n" + frame.data + b"\r\n"

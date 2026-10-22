@@ -100,9 +100,8 @@ class PerceptionEngine:
     # Perception
     # ----------------------------------------------------------------- #
     def detect(self) -> PerceptionSnapshot:
-        frame = self.camera.read()
+        frame, camera_health, _capture_sequence = self.camera.read_snapshot()
         self.last_frame = frame
-        camera_health = self.camera.health()
         height, width = frame.shape[:2] if frame is not None else (self.camera.height, self.camera.width)
 
         t0 = time.monotonic()
