@@ -67,8 +67,14 @@ def _test_mock_pet_brain() -> None:
         brain = MockPetBrain()
         thought = brain.reflect(None, {"distance_cm": 120.0, "target": "cat"},
                                 identity, "curious", "")
-        assert thought.target == "cat"
-        assert thought.mood_hint == "excited"
+        assert thought.target is None, "unobserved targets must not become facts"
+        assert thought.heading_bias_deg == 0, "mind must not request motor headings"
+        assert thought.say == "", "stillness must not cause canned narration"
+        observed = brain.reflect(None, {"target": "sports ball", "observed_labels": ["sports ball"]},
+                                 identity, "curious", "")
+        assert observed.target == "sports ball"
+        assert observed.intention == "orient", "target is attention, never pursuit"
+        assert observed.gesture == "perk"
         evolved = brain.evolve(identity, "saw a cat twice")
         assert "TestPet" in evolved
 

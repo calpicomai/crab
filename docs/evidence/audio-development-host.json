@@ -1,0 +1,48 @@
+{
+  "speaker": {
+    "available": false,
+    "provenance": "real",
+    "timestamp": 1792666331.0854414,
+    "confidence": null,
+    "captured_at": 1792666331.0854414,
+    "failure_reason": "aplay unavailable",
+    "source": "ALSA playback default",
+    "max_age_s": 60,
+    "reason": "aplay unavailable",
+    "device": "default",
+    "playing": false,
+    "listening_suppressed": false,
+    "last_result": {
+      "ok": false,
+      "played": false,
+      "simulate": false,
+      "reason": "playback not tested",
+      "exit_code": null,
+      "timestamp": 1792666331.0854414
+    },
+    "audible_verified": false,
+    "amplifier": "unverified; board-specific enable and routing require hardware acceptance"
+  },
+  "user": "agent",
+  "uid": 1000,
+  "groups": [],
+  "play_requested": false,
+  "hardware_validation": "pending; process success cannot prove audible output",
+  "alsa": {
+    "playback_devices": {
+      "exit_code": null,
+      "output": "tool unavailable"
+    },
+    "capture_devices": {
+      "exit_code": null,
+      "output": "tool unavailable"
+    }
+  },
+  "configuration": {
+    "/proc/asound/cards": "[Errno 2] No such file or directory: '/proc/asound/cards'",
+    "/etc/asound.conf": "[Errno 2] No such file or directory: '/etc/asound.conf'",
+    "/boot/firmware/config.txt": "[Errno 2] No such file or directory: '/boot/firmware/config.txt'",
+    "/boot/config.txt": "[Errno 2] No such file or directory: '/boot/config.txt'"
+  },
+  "device_permissions": {}
+}

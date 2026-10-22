@@ -1,0 +1,72 @@
+# Milestone 1 validation — 2026-10-22
+
+**Passed:** 133 focused unit/integration tests, existing off-body checks, nine
+deterministic scenarios and the isolated HTTP simulator smoke. No physical
+robot or inference model was used. Hardware acceptance remains pending.
+
+Executed from repository root:
+
+```bash
+bash test_sim.sh
+brain/.venv/bin/python -m compileall -q brain robot shared tests
+bash -n brain/run.sh robot/run.sh sim.sh test_sim.sh
+git diff --check
+brain/.venv/bin/python -m brain.pet.scenarios --all --summary --output docs/evidence/scenarios.json
+brain/.venv/bin/python -m brain.pet.benchmark --iterations 30 --output docs/evidence/coordinator-benchmark.json
+brain/.venv/bin/python -m robot.audio
+```
+
+The dashboard script and all HTML inline handlers were extracted and parsed with
+`node --check`; a malformed play-button handler discovered by that check was
+corrected. Browser rendering and mobile interaction are not visually verified.
+
+The focused suite covers real worker-thread interruption, stop/resume ordering,
+old semantic resume cancellation, command correlation/replay/expiry/restart,
+nonfinite payloads, initialization health gates and uncertain outcomes, elapsed
+state and stillness, ignored/stale/dummy observations, battery caps, audio process
+and HTTP errors, reordered/restarted audio, STT/playback overlap, model expiry and
+cleanup, migration/backups and restart continuity. The live HTTP simulation also
+feeds a dashboard greeting through the actual runtime, confirms acknowledgement,
+confirms “good crab, stop” overrides praise, and resumes explicitly.
+
+Scenario fixtures use a virtual clock and inline fake execution for reproducible
+traces. They are separate from the threaded concurrency and HTTP tests. The
+preserved legacy world-model self-tests include label-interest/chase vocabulary;
+that experimental model is not consumed by companion runtime and no animal or
+physical target was pursued.
+
+Measured on this **x86_64 development host**, over 270 scripted scenarios:
+
+| Measurement | Result | Scope |
+| --- | ---: | --- |
+| Peak process RSS | 26.77 MiB | Python coordinator/scenarios only |
+| Process CPU | 2.7333 s | Tight benchmark loop, not idle companion utilization |
+| Wall time | 2.7336 s | All 270 scenarios |
+| Whole-scenario median / p95 | 7.643 / 24.591 ms | Virtual behavior including trace construction |
+| Model inference latency | Unmeasured | No models/GPU available |
+| Jetson combined 8GB budget | Pending | Must include OS, model server, GPU/shared RAM and speech |
+
+[Scenario evidence](evidence/scenarios.json), [benchmark JSON](evidence/coordinator-benchmark.json),
+and [read-only audio diagnostics](evidence/audio-development-host.json) record
+provenance and limitations. The host has no ALSA playback/capture utilities or
+physical output; the audio report is not a diagnosis of the owner's Pi.
+
+## What is not verified
+
+- Physical HAT revision, installed Pi vendor APIs, battery accuracy, calibration,
+  servo initialization, electrical limits, displacement, stalls or stop latency.
+- Pi I2S/ALSA routing, service-account permissions, amplifier enablement or audible
+  speaker output. Software failures are now observable; the actual silent-speaker
+  cause must be established using the [audio acceptance guide](audio-acceptance.md).
+- Jetson model loading, inference quality/latency, actual RAM residency, camera
+  detector accuracy or microphone transcription. Runtime refuses missing local
+  model assets rather than downloading or silently simulating them.
+- Collision/stair/cliff safety, precise turning, reverse, pet chasing or unsupervised
+  navigation. These are not provided by this milestone.
+
+Sandbox note: ASGI/asyncio worker wakeups and loopback tests required network
+permission in this execution environment. With it, tests completed without
+external requests; restricted runs can hang on a blocked wake socket. This was
+treated as an execution constraint, not a reason to weaken the tests.
+
+Next gate: [explicitly approved staged hardware acceptance](HARDWARE_ACCEPTANCE.md).

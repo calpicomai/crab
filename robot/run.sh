@@ -21,8 +21,8 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 
 cat <<EOF
 ================= PiCrawler robot server =================
- SAFETY: charge the 2S pack and ELEVATE the robot / keep legs clear —
- it homes to 'stand' on startup (PICRAWLER_HOME_ON_START=none to skip).
+ Readiness mode: actuators disabled and no startup homing by default.
+ Hardware enablement requires explicit acceptance; keep a physical cutoff accessible.
  Serving on 0.0.0.0:${PICRAWLER_PORT:-8000}${IP:+    (this Pi: ${IP})}
  On the Jetson point the brain at it:  ROBOT_HOST=${IP:-<this-pi-ip>}
  Autostart alternative: robot/systemd/picrawler-server.service

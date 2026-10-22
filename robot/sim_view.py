@@ -39,6 +39,11 @@ DASHBOARD_HTML = r"""
   /* On the real robot (no 2D sim world) hide the sim-only controls/hints and show
      the "surroundings radar" hint instead. Toggled by body.no-world in tick(). */
   .worldoff{display:none}
+  input{background:#10151a;color:var(--ink);border:1px solid #48535e;border-radius:6px;padding:9px;font:inherit;flex:1;min-width:130px}
+  table{width:100%;border-collapse:collapse;font-size:11px}td,th{text-align:left;padding:5px;border-bottom:1px solid #303842;vertical-align:top;overflow-wrap:anywhere}
+  pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}
+  @media(max-width:760px){.wrap{grid-template-columns:1fr;padding:8px}.row{gap:6px}header{gap:8px}}
+
   .no-world .worldonly{display:none}
   .no-world .worldoff{display:inline-block}
 </style></head>
@@ -48,6 +53,8 @@ DASHBOARD_HTML = r"""
   <span id="petname" class="pill">…</span>
   <span id="mode" class="pill">…</span>
   <span class="sp"></span>
+  <button onclick="stopCompanion()" style="border-color:#e5533d">Stop companion</button>
+  <button onclick="sendText('resume')">Resume</button>
   <button class="worldonly" onclick="ctl('pause')">⏸ pause</button>
   <button class="worldonly" onclick="ctl('resume')">▶ resume</button>
   <button class="worldonly" onclick="ctl('reset')">⟲ reset</button>
@@ -57,6 +64,11 @@ DASHBOARD_HTML = r"""
   </select>
   <span class="worldoff pill">🤖 live robot</span>
 </header>
+<div class="panel" style="margin:12px 12px 0">
+  <div class="row"><input id="engagement" maxlength="500" placeholder="Say hello, ask something, or invite play" aria-label="Companion message">
+    <button onclick="sendText()">Send</button><button onclick="sendText('hello')">Hello</button><button onclick="sendText('play')">Play</button></div>
+  <div class="hint" id="input-result">Local typed input. No identity recognition. Software stop acts at a vendor boundary; keep a physical power cutoff accessible.</div>
+</div>
 <div class="wrap">
   <div class="col">
     <div class="panel">
@@ -70,7 +82,9 @@ DASHBOARD_HTML = r"""
   </div>
   <div class="col">
     <div class="panel">
-      <h3>Pet</h3>
+      <h3>Companion</h3>
+      <div id="episode" class="pill">waiting for companion</div>
+      <div id="blocked" class="hint" style="margin:8px 0"></div>
       <div class="row">
         <div class="col">
           <div class="mood" id="mood">—</div>
@@ -80,6 +94,13 @@ DASHBOARD_HTML = r"""
       </div>
       <div id="say" class="hint" style="margin-top:8px"></div>
       <div id="world" class="hint" style="margin-top:6px"></div>
+    </div>
+    <div class="panel" style="margin-top:12px">
+      <h3>Inputs and readiness</h3>
+      <div class="hint" id="evidence">Hardware verification pending</div>
+      <table><thead><tr><th>Input</th><th>Evidence</th><th>Behavior use</th></tr></thead><tbody id="inputs"></tbody></table>
+      <h3 style="margin-top:12px">Intentions and results</h3><pre id="intentions"></pre>
+      <h3>Audio pipeline</h3><pre id="audio-health"></pre>
     </div>
     <div class="panel" style="margin-top:12px">
       <h3>Camera (first-person)</h3>
@@ -114,6 +135,20 @@ let battHist=[], moodHist=[], acts={}, sights={}, lastTgt="";
 const MOODCLR={curious:"#4bd",excited:"#e5b33d",playful:"#7ed957",cautious:"#e58b3d",startled:"#e5533d",bored:"#8b98a5",sleepy:"#5566aa"};
 $("cam").src="/camera/stream";
 
+async function sendText(text){
+  text=text||$("engagement").value.trim();if(!text)return;
+  try{const r=await fetch("__EVENT_PATH__",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+    const result=await r.json();$("input-result").textContent=result.ok?"Input delivered locally":(result.reason||"Input failed");
+    if(result.ok)$("engagement").value="";
+  }catch(e){$("input-result").textContent="Robot connection unavailable";}
+}
+$("engagement").addEventListener("keydown",e=>{if(e.key==="Enter")sendText();});
+async function stopCompanion(){
+  try{const r=await fetch("__STOP_PATH__",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const result=await r.json();$("input-result").textContent=result.detail||"Stop result unknown";
+    await sendText("stop");
+  }catch(e){$("input-result").textContent="Stop unconfirmed: use physical power cutoff if needed";}
+}
 function ctl(action,scenario){fetch("/sim/control",{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({action,scenario})});}
 
@@ -243,6 +278,13 @@ async function tick(){
   const worldOn=!!s.enabled;
   document.body.classList.toggle("no-world",!worldOn);
   const b=s.brain||{};
+  const telemetryStale=!b._received_at || Date.now()/1000-b._received_at>3;
+  $("episode").textContent=telemetryStale?"companion telemetry unavailable or stale":b.stopped?"stopped — explicit resume required":(b.episode?.phase||"waiting for companion");
+  $("blocked").textContent=b.blocked_reason||"Stillness is intentional.";
+  $("evidence").textContent=worldOn?"Explicit kinematic simulation; movement estimates are idealized. No hardware verification.":"Real deployment: hardware acceptance is pending; input availability is not a safety guarantee.";
+  $("inputs").innerHTML=Object.entries(b.inputs||{}).map(([name,h])=>`<tr><td>${esc(name)}</td><td>${esc(h.provenance||"unknown")} · ${h.available?(!telemetryStale&&h.fresh&&Date.now()/1000-h.captured_at<=h.max_age_s?"fresh":"stale"):"unavailable"}${h.age_s!=null?" · "+esc(String(h.age_s))+"s":""}</td><td>${esc(h.used&&!telemetryStale?"used":(h.ignored_reason||h.failure_reason||"not used"))}</td></tr>`).join("");
+  $("intentions").textContent=(b.intentions||[]).slice(-6).map(i=>`${i.kind} · ${i.status} — ${i.result?.reason||i.reason}`).join("\n");
+  $("audio-health").textContent=JSON.stringify({output:b.audio,hearing:b.hearing,mind:b.mind},null,2);
   // Map panel: the sim's top-down world when we have one, else a robot-centered
   // costmap radar (the honest "what it senses around it" view on real hardware).
   if(worldOn) drawMap(s); else drawRadar(b.costmap);
@@ -257,7 +299,7 @@ async function tick(){
       battery:batt(b), paused:s.paused?"YES":"no", tick:b.tick??"—"});
   }else{
     $("telkv").innerHTML=kv({clearance:clr==null?"—":clr+"cm",
-      camera:b.camera_fused?"fused":"off", forward:b.forward_clear?"clear":"blocked",
+      camera:b.inputs?.camera?.used?"attention":"ignored", forward:"no locomotion",
       reflex:b.reflex?"YES":"no", battery:batt(b), tick:b.tick??"—"});
   }
   $("mode").textContent=b.mode||"no brain";
@@ -269,7 +311,7 @@ async function tick(){
   if(b.character)$("say").innerHTML="<i>"+esc(b.character)+"</i>";
   $("world").textContent=b.world?("🧠 "+b.world):"";
   // logs
-  if(b.say&&b.say!=lastSay){lastSay=b.say;logLine("log","🐾 "+b.say);}
+  if(b.last_say&&b.last_say!=lastSay){lastSay=b.last_say;logLine("log",b.last_say);}
   if(b.action&&b.action!=lastAction){lastAction=b.action;logLine("events","· "+b.action);
     acts[b.action.split(" ")[0]]=(acts[b.action.split(" ")[0]]||0)+1;}   // action histogram
   if(b.mood&&b.mood!=lastMood){lastMood=b.mood;logLine("events","mood → "+b.mood);}
@@ -280,7 +322,7 @@ async function tick(){
   drawVitals(); moodStrip(); bars("acts",acts); bars("sights",sights);
   $("perfkv").innerHTML=kv({
     sonar:(b.distance_cm!=null?("live "+Math.round(b.distance_cm)+"cm"):"— no read"),
-    reflex:(b.reflex?"⚠ stopped":"armed"),
+    reflex:(b.reflex?"stopped":"no guarantee"),
     think:(b.think_ms?b.think_ms+"ms":"—"),
     perceive:(b.perc_ms!=null?Math.round(b.perc_ms)+"ms":"—"),
     loop:(b.loop_hz?b.loop_hz+"Hz":"—")});
@@ -293,3 +335,6 @@ setInterval(tick,140); tick();
 </script>
 </body></html>
 """
+
+from shared import ACTION_PATHS, Action, COMPANION_EVENTS_PATH
+DASHBOARD_HTML = DASHBOARD_HTML.replace("__EVENT_PATH__", COMPANION_EVENTS_PATH).replace("__STOP_PATH__", ACTION_PATHS[Action.STOP])

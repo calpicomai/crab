@@ -1,213 +1,55 @@
 #!/usr/bin/env bash
-# The easy button for the Jetson brain. Just:
-#
-#   bash brain/run.sh
-#
-# First run asks a few questions (with sensible defaults — press Enter) and saves
-# them to crab.env, so you never retype flags/addresses. After that it shows a
-# small menu: pet / wander / agent / check. It wires up perception + the VLM for
-# you and degrades gracefully (no VLM -> canned voice; no perception -> sonar +
-# reflex only).
-#
-# Power users can skip the menu:  bash brain/run.sh pet -- --goal "explore"
+# Local readiness and stationary companionship. No automatic model/service/power changes.
 set -euo pipefail
-
 NODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$NODE_DIR")"
-VENV="$NODE_DIR/.venv"
+PY="$NODE_DIR/.venv/bin/python"
 CONF="$REPO_ROOT/crab.env"
-RUN_DIR="$NODE_DIR/.run"
-PY="$VENV/bin/python"
-
-[ -x "$PY" ] || { echo "brain/.venv not found — run 'bash brain/setup.sh' first." >&2; exit 1; }
+[ -x "$PY" ] || { echo "Run bash brain/setup.sh to create the Python environment." >&2; exit 1; }
 cd "$REPO_ROOT"
-mkdir -p "$RUN_DIR"
-
-# Make locally-installed tools discoverable at runtime: the Piper binary that
-# setup_voice.sh downloads (so the pet's Voice finds `piper` via shutil.which) and
-# the venv's console scripts.
-export PATH="$NODE_DIR/.piper/piper:$VENV/bin:$PATH"
-
-# --- split off passthrough args (everything after `--`) and an optional mode --
-MODE=""
-EXTRA=()
-if [ "${1:-}" != "" ] && [[ "${1}" != "--" ]]; then MODE="$1"; shift || true; fi
-if [ "${1:-}" == "--" ]; then shift; EXTRA=("$@"); fi
-
-# ------------------------------------------------------------------ helpers
-ask() {  # ask "Prompt" "default" -> echoes answer (prompt to stderr so $() is clean)
-  local p="$1" d="$2" v; read -r -p "$p [$d]: " v; echo "${v:-$d}"; }
-askyn() { local p="$1" d="$2" v; read -r -p "$p (y/n) [$d]: " v; v="${v:-$d}"; [[ "$v" =~ ^[Yy] ]] && echo 1 || echo 0; }
-
-wizard() {
-  { echo; echo "First-time setup (saved to crab.env — press Enter for the default):"; } >&2
-  local host name voice model dash llm_url llm_model
-  host="$(ask '  Robot address (Pi hostname or IP)' "${ROBOT_HOST:-picrawler.local}")"
-  name="$(ask '  Name your pet (blank = it names itself)' "${PET_NAME:-}")"
-  voice="$(askyn '  Speak out loud (Piper TTS, plays on the Pi)?' n)"
-  model=""
-  if [ "$voice" = "1" ]; then model="$(ask '    Piper voice model path (.onnx)' "${PET_VOICE_MODEL:-}")"; fi
-  stt="$(askyn '  Listen for spoken commands (mic on the Pi -> Whisper)?' y)"
-  dash="$(askyn '  Show the live dashboard at /sim?' y)"
-  # The mind: the local VLM (Ollama). Install it with `bash brain/setup_agent.sh`.
-  llm_url="" llm_model=""
-  if [ "$(askyn '  Use the local VLM (Ollama) for its mind?' y)" = "1" ]; then
-    llm_url="http://localhost:11434/v1"; llm_model="${LLM_MODEL:-qwen2.5vl:3b}"
-  else
-    llm_url="$(ask '    VLM server URL (blank = none, canned voice)' "${LLM_BASE_URL:-}")"
-    [ -n "$llm_url" ] && llm_model="$(ask '    VLM model name' "${LLM_MODEL:-qwen2.5-vl-3b-instruct}")"
-  fi
-  cat > "$CONF" <<EOF
-# crab per-rig preferences (git-ignored). Re-run: bash brain/run.sh reconfigure
-ROBOT_HOST="$host"
-PET_NAME="$name"
-PET_VOICE="$voice"
-PET_VOICE_MODEL="$model"
-PET_STT="$stt"
-PET_DASHBOARD="$dash"
-LLM_BASE_URL="$llm_url"
-LLM_MODEL="$llm_model"
-EOF
-  echo "  saved $CONF" >&2
-}
-
-url_ok() { curl -fsS --max-time 3 "$1" >/dev/null 2>&1; }
-
-# Report the Jetson power mode and nudge toward max if it isn't (the VLM + perception
-# want the full budget). Read-only — no sudo; set it once with brain/setup_agent.sh or
-# the brain/systemd/jetson-max-power.service boot unit.
-power_note() {
-  command -v nvpmodel >/dev/null 2>&1 || return 0
-  local m; m="$(nvpmodel -q 2>/dev/null | sed -n 's/.*NV Power Mode: *//p' | head -1)"
-  case "$m" in
-    ""|MAXN|MAXN_SUPER) [ -n "$m" ] && echo "  ✓ Jetson power: $m" || true ;;
-    *) echo "  ⚠ Jetson power mode '$m' is throttled — for full VLM speed: sudo nvpmodel -m 0 && sudo jetson_clocks" ;;
-  esac
-}
-
-# ------------------------------------------------------------------ config
-[ "$MODE" = "reconfigure" ] && { wizard; MODE=""; }
-[ -f "$CONF" ] || wizard
-# shellcheck disable=SC1090
-source "$CONF"
-export ROBOT_HOST PET_VOICE_MODEL
-[ -n "${LLM_BASE_URL:-}" ] && export LLM_BASE_URL
-[ -n "${LLM_MODEL:-}" ] && export LLM_MODEL
-BASE="http://${ROBOT_HOST}:${ROBOT_PORT:-8000}"
-
-# ------------------------------------------------------------------ menu
+export PATH="$NODE_DIR/.piper/piper:$NODE_DIR/.venv/bin:$PATH"
+MODE="${1:-}"
+[ "$#" -eq 0 ] || shift
+[ "${1:-}" != "--" ] || shift
+if [ -f "$CONF" ]; then
+  set -a
+  source "$CONF"
+  set +a
+fi
+if [ "$MODE" = reconfigure ]; then
+  [ ! -f "$CONF" ] || cp -p "$CONF" "$CONF.backup-$(date +%Y%m%d%H%M%S)"
+  read -r -p "Pi hostname [${ROBOT_HOST:-picrawler.local}]: " value
+  ROBOT_HOST="${value:-${ROBOT_HOST:-picrawler.local}}"
+  read -r -p "Companion name [${PET_NAME:-Crab}]: " value
+  PET_NAME="${value:-${PET_NAME:-Crab}}"
+  # Shell-safe values; preserve all unrelated preferences in existing configuration.
+  printf '\n# Companion preferences\nROBOT_HOST=%q\nPET_NAME=%q\n' "$ROBOT_HOST" "$PET_NAME" >> "$CONF"
+  export ROBOT_HOST PET_NAME
+  MODE=check
+fi
 if [ -z "$MODE" ]; then
-  {
-    echo; echo "What should ${PET_NAME:-your pet} do?"
-    echo "  1) pet        — the creature (default)"
-    echo "  2) wander     — plain reactive avoidance"
-    echo "  3) agent      — VLM free-roam + narrate"
-    echo "  4) check      — readiness checklist, no movement"
-    echo "  5) reconfigure"
-  } >&2
-  read -r -p "pick [1]: " pick
-  case "${pick:-1}" in
-    1|"") MODE=pet ;; 2) MODE=wander ;; 3) MODE=agent ;;
-    4) MODE=check ;; 5) wizard; source "$CONF"; MODE=pet ;;
-    *) MODE=pet ;;
-  esac
-fi
-
-# ------------------------------------------------------------------ preflight
-echo "Checking the robot at $BASE ..."
-if ! url_ok "$BASE/health"; then
-  echo "  ✗ can't reach the robot. Is 'bash robot/run.sh' running on the Pi, and is" >&2
-  echo "    ROBOT_HOST correct in crab.env (currently '$ROBOT_HOST')? Try its IP." >&2
-  exit 1
-fi
-echo "  ✓ robot up"
-
-# ------------------------------------------------------------------ check mode
-if [ "$MODE" = "check" ]; then
-  echo "Readiness (no motion):"
-  url_ok "$BASE/health"          && echo "  ✓ robot server"        || echo "  ✗ robot server"
-  url_ok "$BASE/camera/frame"    && echo "  ✓ camera frame"        || echo "  ✗ camera frame"
-  if curl -fsS --max-time 3 "$BASE/health" 2>/dev/null | grep -q '"audio":{'; then
-    echo "  ✓ audio device (Pi mic + speaker)"
+  if [ -t 0 ]; then
+    echo "1) interaction   2) quiet companionship   3) readiness (no motion/sound)"
+    read -r -p "Choose [1]: " choice
+    case "${choice:-1}" in 2) MODE=quiet;; 3) MODE=check;; *) MODE=pet;; esac
   else
-    echo "  – audio device off (no mic/speaker)"
+    MODE=pet
   fi
-  url_ok "http://localhost:8100/health" && echo "  ✓ perception (:8100)" || echo "  – perception not running (optional)"
-  if [ -n "${LLM_BASE_URL:-}" ] && url_ok "${LLM_BASE_URL%/}/models"; then
-    echo "  ✓ VLM ($LLM_BASE_URL)"
-  else
-    echo "  – no VLM (pet uses its canned voice)"
-  fi
-  stjson="$(curl -fsS --max-time 3 -X POST -H 'Content-Type: application/json' -d '{}' "$BASE/status" 2>/dev/null)"
-  dist="$(printf '%s' "$stjson" | sed -n 's/.*"distance_cm":\([0-9.]*\).*/\1/p')"
-  [ -n "$dist" ] && echo "  ✓ ultrasonic reads ${dist} cm" || echo "  – ultrasonic: no reading"
-  batt="$(printf '%s' "$stjson" | sed -n 's/.*"battery_v":\([0-9.]*\).*/\1/p')"
-  [ -n "$batt" ] && echo "  ✓ battery ${batt} V" || echo "  – battery: no reading"
-  power_note
-  exit 0
 fi
-
-# ------------------------------------------------------------------ perception (optional, best-effort)
-PERC_PID=""
-cleanup() { [ -n "$PERC_PID" ] && kill "$PERC_PID" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
-if ! url_ok "http://localhost:8100/health"; then
-  echo "Starting perception (camera detectors) in the background ..."
-  "$PY" -m brain.perception.server >"$RUN_DIR/perception.log" 2>&1 &
-  PERC_PID=$!
-  for _ in $(seq 1 20); do url_ok "http://localhost:8100/health" && break; sleep 0.5; done
-  url_ok "http://localhost:8100/health" \
-    && echo "  ✓ perception up" \
-    || echo "  – perception didn't start (see $RUN_DIR/perception.log) — running on sonar + reflex"
-else
-  echo "  ✓ perception already running";
-fi
-
-# ------------------------------------------------------------------ VLM detect
-HAS_VLM=0
-if [ -n "${LLM_BASE_URL:-}" ]; then
-  # A local Ollama that isn't up yet? Best-effort start it (it installs as a
-  # systemd service, so this is usually already running).
-  if [[ "$LLM_BASE_URL" == *:11434* ]] && ! url_ok "${LLM_BASE_URL%/}/models"; then
-    echo "Starting the local VLM (Ollama) ..."
-    sudo systemctl start ollama 2>/dev/null || (ollama serve >"$RUN_DIR/ollama.log" 2>&1 &) || true
-    for _ in $(seq 1 30); do url_ok "${LLM_BASE_URL%/}/models" && break; sleep 1; done
-  fi
-  url_ok "${LLM_BASE_URL%/}/models" && HAS_VLM=1
-fi
-if [ "$HAS_VLM" = "1" ]; then
-  echo "  ✓ VLM at $LLM_BASE_URL (model ${LLM_MODEL:-?}) — real inner voice"
-elif command -v ollama >/dev/null 2>&1; then
-  echo "  – VLM not answering — canned voice. Is the model pulled?  ollama pull ${LLM_MODEL:-qwen2.5vl:3b}"
-else
-  echo "  – no VLM — canned voice. Install one:  bash brain/setup_agent.sh"
-fi
-power_note
-
-# ------------------------------------------------------------------ launch
-# Run the loop in the FOREGROUND (not exec) so the cleanup trap can stop the
-# perception child we started when the loop exits / you Ctrl+C.
-FLAGS=()
 case "$MODE" in
-  pet)
-    [ -n "${PET_NAME:-}" ] && FLAGS+=(--name "$PET_NAME")
-    [ "${PET_VOICE:-0}" = "1" ] && FLAGS+=(--voice)
-    [ "${PET_STT:-1}" = "0" ] && FLAGS+=(--no-stt)   # spoken commands off
-    [ "${PET_DASHBOARD:-1}" = "1" ] && FLAGS+=(--dashboard)
-    [ "$HAS_VLM" = "0" ] && FLAGS+=(--sim)   # canned inner voice when no VLM
-    echo; echo "Launching pet ${FLAGS[*]} ${EXTRA[*]:-}"
-    "$PY" -m brain.pet "${FLAGS[@]}" ${EXTRA[@]+"${EXTRA[@]}"}
-    ;;
-  wander)
-    echo; echo "Launching wander ${EXTRA[*]:-}"
-    "$PY" -m brain.wander ${EXTRA[@]+"${EXTRA[@]}"}
-    ;;
-  agent)
-    [ "$HAS_VLM" = "0" ] && FLAGS+=(--sim)
-    echo; echo "Launching agent ${FLAGS[*]} ${EXTRA[*]:-}"
-    "$PY" -m brain.agent.loop "${FLAGS[@]}" ${EXTRA[@]+"${EXTRA[@]}"}
-    ;;
-  *)
-    echo "Unknown mode '$MODE' (expected pet|wander|agent|check|reconfigure)." >&2
+  check|readiness) exec "$PY" -m brain.pet.readiness "$@" ;;
+  pet|interaction|quiet)
+    FLAGS=(--mode interaction)
+    [ "$MODE" != quiet ] || FLAGS=(--mode quiet)
+    [ -z "${PET_NAME:-}" ] || FLAGS+=(--name "$PET_NAME")
+    [ "${PET_DASHBOARD:-1}" != 1 ] || FLAGS+=(--dashboard)
+    [ "${PET_VOICE:-0}" != 1 ] || FLAGS+=(--voice)
+    [ "${PET_STT:-1}" != 0 ] || FLAGS+=(--no-stt)
+    # Models are provisioned/started separately after measuring the Jetson budget.
+    [ -n "${LLM_BASE_URL:-}" ] || FLAGS+=(--no-llm)
+    exec "$PY" -m brain.pet "${FLAGS[@]}" "$@" ;;
+  wander|agent)
+    echo "Legacy navigation is simulation-only and is not a companion mode. Use pet, quiet or check." >&2
     exit 2 ;;
+  *) echo "Modes: pet | quiet | check | reconfigure. Supervised exploration is planned." >&2; exit 2 ;;
 esac

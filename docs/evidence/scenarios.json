@@ -1,0 +1,458 @@
+{
+  "scenarios": [
+    {
+      "audio_intentions": [
+        {
+          "kind": "sound",
+          "name": "acknowledge",
+          "played": false
+        },
+        {
+          "kind": "sound",
+          "name": "settle",
+          "played": false
+        }
+      ],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "orient",
+          "reason": "attention only; no measured bearing or physical turn",
+          "status": "completed"
+        },
+        {
+          "kind": "acknowledge",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        },
+        {
+          "kind": "settle",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "notice"
+        },
+        {
+          "at_s": 1.5,
+          "phase": "orient"
+        },
+        {
+          "at_s": 2.0,
+          "phase": "acknowledge"
+        },
+        {
+          "at_s": 2.5,
+          "phase": "listen"
+        },
+        {
+          "at_s": 8.5,
+          "phase": "settle"
+        },
+        {
+          "at_s": 9.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "greeting",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "stop",
+          "reason": "explicit scenario fixture; no hardware",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "notice"
+        },
+        {
+          "at_s": 1.0,
+          "phase": "stopped"
+        }
+      ],
+      "robot_commands": [
+        "stop"
+      ],
+      "scenario": "interruption",
+      "stopped": true
+    },
+    {
+      "audio_intentions": [
+        {
+          "kind": "speech",
+          "played": false,
+          "text": "I'll stay nearby for now."
+        },
+        {
+          "kind": "sound",
+          "name": "settle",
+          "played": false
+        }
+      ],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "respond",
+          "reason": "response prepared; inspect playback health",
+          "status": "completed"
+        },
+        {
+          "kind": "settle",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "respond"
+        },
+        {
+          "at_s": 1.5,
+          "phase": "listen"
+        },
+        {
+          "at_s": 7.5,
+          "phase": "settle"
+        },
+        {
+          "at_s": 8.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "ignored-command",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input",
+        "ultrasonic": "sensor dropout"
+      },
+      "intentions": [
+        {
+          "kind": "stand",
+          "reason": "ultrasonic unavailable or stale",
+          "status": "blocked"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "sensor-dropout",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "stop",
+          "reason": "explicit scenario fixture; no hardware",
+          "status": "completed"
+        },
+        {
+          "kind": "acknowledge",
+          "reason": "stop latched; explicit resume required",
+          "status": "blocked"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "stopped"
+        }
+      ],
+      "robot_commands": [
+        "stop"
+      ],
+      "scenario": "low-battery",
+      "stopped": true
+    },
+    {
+      "audio_intentions": [
+        {
+          "kind": "speech",
+          "played": false,
+          "text": "I'll stay nearby for now."
+        },
+        {
+          "kind": "sound",
+          "name": "settle",
+          "played": false
+        }
+      ],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "respond",
+          "reason": "response prepared; inspect playback health",
+          "status": "completed"
+        },
+        {
+          "kind": "settle",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "respond"
+        },
+        {
+          "at_s": 1.5,
+          "phase": "listen"
+        },
+        {
+          "at_s": 7.5,
+          "phase": "settle"
+        },
+        {
+          "at_s": 8.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "blocked-route",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [
+        {
+          "kind": "sound",
+          "name": "acknowledge",
+          "played": false
+        },
+        {
+          "kind": "sound",
+          "name": "settle",
+          "played": false
+        }
+      ],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "respond",
+          "reason": "model result expired",
+          "status": "expired"
+        },
+        {
+          "kind": "orient",
+          "reason": "attention only; no measured bearing or physical turn",
+          "status": "completed"
+        },
+        {
+          "kind": "acknowledge",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        },
+        {
+          "kind": "settle",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "notice"
+        },
+        {
+          "at_s": 1.5,
+          "phase": "orient"
+        },
+        {
+          "at_s": 2.0,
+          "phase": "acknowledge"
+        },
+        {
+          "at_s": 2.5,
+          "phase": "listen"
+        },
+        {
+          "at_s": 8.5,
+          "phase": "settle"
+        },
+        {
+          "at_s": 9.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "model-timeout",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [
+        {
+          "kind": "sound",
+          "name": "acknowledge",
+          "played": false
+        },
+        {
+          "kind": "sound",
+          "name": "settle",
+          "played": false
+        }
+      ],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "orient",
+          "reason": "attention only; no measured bearing or physical turn",
+          "status": "completed"
+        },
+        {
+          "kind": "acknowledge",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        },
+        {
+          "kind": "settle",
+          "reason": "audio requested; inspect playback health",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.2,
+          "phase": "notice"
+        },
+        {
+          "at_s": 1.5,
+          "phase": "orient"
+        },
+        {
+          "at_s": 2.0,
+          "phase": "acknowledge"
+        },
+        {
+          "at_s": 2.5,
+          "phase": "listen"
+        },
+        {
+          "at_s": 8.5,
+          "phase": "settle"
+        },
+        {
+          "at_s": 9.0,
+          "phase": "settled"
+        }
+      ],
+      "robot_commands": [],
+      "scenario": "repeated-interaction",
+      "stopped": false
+    },
+    {
+      "audio_intentions": [],
+      "ignored_inputs": {
+        "camera": "scenario camera not enabled",
+        "interpretation": "scenario detector not enabled",
+        "microphone": "scripted text input"
+      },
+      "intentions": [
+        {
+          "kind": "stop",
+          "reason": "explicit scenario fixture; no hardware",
+          "status": "completed"
+        }
+      ],
+      "phase_transitions": [
+        {
+          "at_s": 0.0,
+          "phase": "settled"
+        },
+        {
+          "at_s": 0.5,
+          "phase": "notice"
+        },
+        {
+          "at_s": 1.0,
+          "phase": "stopped"
+        }
+      ],
+      "robot_commands": [
+        "stop"
+      ],
+      "scenario": "reconnect",
+      "stopped": true
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Virtual-clock fixtures; no hardware, physical sound, real model, or motion physics."
+}
