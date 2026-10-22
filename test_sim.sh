@@ -79,13 +79,15 @@ def until(predicate, message):
         time.sleep(.08)
     raise AssertionError(message+': '+str(get()))
 until(lambda b: b.get('inputs'), 'companion telemetry unavailable')
+until(lambda b: b.get('pipeline', {}).get('transport', {}).get('ready') is True,
+      'companion WebSocket not ready')
 send('hello')
 until(lambda b: any(i['kind']=='acknowledge' for i in b.get('intentions',[])), 'greeting not acknowledged')
 send('good crab, stop')
 until(lambda b: b.get('stopped'), 'stop did not override praise')
 send('resume')
 until(lambda b: b.get('stopped') is False, 'explicit resume failed')
-print('Live simulated companion greeting, priority stop and resume passed.')
+print('Live WebSocket companion greeting, priority stop and resume passed.')
 PYTEST
   wait "$PET_PID"
   PET_PID=""

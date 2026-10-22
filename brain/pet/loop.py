@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import queue
 import threading
 import time
@@ -16,6 +17,7 @@ from .. import config as brain_config
 from ..client import RobotClient
 from ..dashboard import Dashboard
 from ..hearing import build_ears
+from ..realtime import RealtimeClient
 from . import commands, config
 from .brain import build_pet_brain
 from .coordinator import Coordinator
@@ -41,17 +43,30 @@ class EventInbox:
     def __init__(self):
         self.normal = queue.Queue(maxsize=32)
         self.urgent = None
+        self.stop_after = float("-inf")
+        self.control_epoch = -1
         self.lock = threading.Lock()
 
     def put_nowait(self, event):
         command = commands.interpret(event.get("text", ""))
+        stamp = event.get("timestamp")
+        valid_stamp = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp)
         with self.lock:
+            epoch = event.get("control_epoch")
+            if type(epoch) is int and epoch >= 0:
+                if epoch < self.control_epoch:
+                    return
+                if epoch > self.control_epoch:
+                    self._discard_before_epoch_locked(epoch)
             if command and command.name in {"stop", "stay", "scold"}:
+                self.stop_after = max(self.stop_after, stamp if valid_stamp else time.time())
                 self.urgent = event
                 # Old resume/social input must not undo a newer stop.
                 while not self.normal.empty():
                     self.normal.get_nowait()
                 return
+            if not valid_stamp or stamp <= self.stop_after:
+                return  # a delayed pre-stop resume cannot become new engagement
             try:
                 self.normal.put_nowait(event)
             except queue.Full:
@@ -64,6 +79,37 @@ class EventInbox:
                 event, self.urgent = self.urgent, None
                 return event
         return self.normal.get_nowait()
+
+    def discard_pending(self):
+        """Discard old resume/social input at a transport-loss boundary."""
+        with self.lock:
+            self.stop_after = max(self.stop_after, time.time())
+            while not self.normal.empty():
+                self.normal.get_nowait()
+
+    def _discard_before_epoch_locked(self, epoch):
+        self.control_epoch = epoch
+        retained = []
+        while not self.normal.empty():
+            event = self.normal.get_nowait()
+            original = event.get("control_epoch")
+            if type(original) is int and original >= epoch:
+                retained.append(event)
+        for event in retained:
+            self.normal.put_nowait(event)
+
+    def discard_before_epoch(self, epoch):
+        """A new Pi stop barrier cannot upgrade already queued user intent."""
+        with self.lock:
+            if epoch > self.control_epoch:
+                self._discard_before_epoch_locked(epoch)
+
+    def reset_control_epoch(self):
+        """A different Pi boot invalidates ordinary input and starts a new epoch."""
+        with self.lock:
+            self.control_epoch = -1
+            while not self.normal.empty():
+                self.normal.get_nowait()
 
 
 class MindWorker:
@@ -134,17 +180,19 @@ def main(argv=None) -> int:
 
     identity = PetIdentity(args.identity_file, name=args.name)
     memory = MemoryStore(args.memory_db)
-    client = RobotClient(args.base_url, timeout=5)
-    control = RobotClient(args.base_url, timeout=1)
+    realtime = RealtimeClient(args.base_url)
+    client = RobotClient(args.base_url, timeout=5, realtime=realtime)
+    control = RobotClient(args.base_url, timeout=1, realtime=realtime)
     voice = Voice(enabled=(config.PET_VOICE or args.voice) and not args.no_voice,
                   model=config.PET_VOICE_MODEL, player=config.PET_VOICE_PLAYER,
                   sink=config.PET_AUDIO_SINK, play_url=client.base_url+AUDIO_PLAY_PATH,
                   stop_url=client.base_url+AUDIO_STOP_PATH)
     coordinator = Coordinator(client, voice, identity, control_client=control, mode=args.mode,
                               motion_enabled=args.body_expressions and not args.no_emote,
-                              continuity=memory.interaction_history())
+                              continuity=memory.interaction_history(), transport_source="robot WebSocket")
     heard = EventInbox()
-    inputs = InputWorker(client.base_url, args.perception_url, heard, use_camera=not args.no_camera)
+    inputs = InputWorker(client.base_url, args.perception_url, heard,
+                         use_camera=not args.no_camera, realtime=realtime)
     mind = None
     mind_error = None
     if not args.no_llm:
@@ -155,15 +203,19 @@ def main(argv=None) -> int:
     ears = None
     if config.PET_STT and not args.no_stt:
         ears = build_ears(client.base_url+AUDIO_STREAM_PATH, config.WHISPER_MODEL,
-                          lambda text: _latest(heard, {"text": text, "timestamp": time.time(), "source": "microphone"}),
+                          lambda text: _latest(heard, {"text": text, "timestamp": time.time(), "source": "microphone",
+                                                       "control_epoch": realtime.health().get("control_epoch")}),
                           wake_word=config.PET_WAKE_WORD or None,
                           device=config.WHISPER_DEVICE, compute_type=config.WHISPER_COMPUTE,
-                          suppress=voice.listening_suppressed, playback_epoch=lambda: voice.listening_epoch)
+                          suppress=voice.listening_suppressed,
+                          playback_epoch=lambda: (voice.listening_epoch, realtime.health().get("boot_id"),
+                                                  realtime.health().get("control_epoch")))
     dashboard = Dashboard(client.base_url, args.dashboard)
     log = open(args.log, "a", encoding="utf-8") if args.log else None
     generation = 0
     latest_status = {}
     last_boot = None
+    last_control_epoch = None
     started, last_publish = time.monotonic(), 0.0
     tick, think_ms = 0, None
     print(f"{identity.name}: {args.mode} companionship. Body expressions {'requested' if args.body_expressions else 'disabled'}.")
@@ -175,13 +227,25 @@ def main(argv=None) -> int:
             ears.start()
         while not (args.max_ticks and tick >= args.max_ticks) and not (args.duration and time.monotonic()-started >= args.duration):
             tick += 1
+            if hasattr(inputs, "failures"):
+                try:
+                    loss_reason = inputs.failures.get_nowait()
+                    generation += 1
+                    latest_status = {}
+                    coordinator.connection_lost(loss_reason)
+                except queue.Empty:
+                    pass
             try:
                 status, snapshot, error = inputs.samples.get_nowait()
                 if status:
                     boot = status.get("boot_id")
                     if last_boot is not None and boot != last_boot:
                         generation += 1  # no model result survives a robot restart
+                    epoch = status.get("control_epoch")
+                    if last_control_epoch is not None and epoch != last_control_epoch:
+                        generation += 1  # Pi stop cancels interpretation already in flight
                     last_boot = boot
+                    last_control_epoch = epoch
                     latest_status = status
                 else:
                     generation += 1
@@ -200,7 +264,8 @@ def main(argv=None) -> int:
                     continue
                 text = event["text"]
                 generation += 1
-                coordinator.hear(text, source=event.get("source", "operator"))
+                coordinator.hear(text, source=event.get("source", "operator"),
+                                 control_epoch=event.get("control_epoch"))
                 memory.remember(observed_facts={"utterance": text}, source=event.get("source", "user"))
                 command = commands.interpret(text)
                 if command is None and mind:

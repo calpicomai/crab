@@ -48,6 +48,13 @@ old pending frames/updates are replaced. Feed age, request timing and stale
 warnings are visible. See [live-feed measurements](docs/live-feed-performance.md)
 for reproducible latency checks and the remaining Pi/LAN/Jetson measurements.
 
+Pi–Jetson status, input events, command leases and results use one bounded local
+WebSocket connection. The browser keeps SSE telemetry and separate camera/audio
+HTTP feeds. Link health and round-trip time appear on the dashboard. A lost
+companion connection latches stop; reconnect never replays a command or resumes
+movement. Update Pi and brain together, then run read-only readiness before
+starting the companion. See [transport contract and measurements](docs/websocket-transport.md).
+
 Voice/effects are opt-in through `PET_VOICE=1` or `--voice`. Effects work without
 Piper; speech additionally requires a local Piper binary and `.onnx` plus
 `.onnx.json` model. Missing Whisper/Piper/ALSA stays visibly unavailable. No audio
@@ -92,8 +99,8 @@ it does not override the Pi's independent enablement and health gates.
 The Pi centralizes speed/battery limits and checks power at each motion boundary.
 Forward cycles require a valid ultrasonic read and cannot lower the Pi's reflex
 margin. Unknown input blocks relevant motion. Short-lived one-use leases reject
-expired/replayed commands and commands from a previous server boot. Failed HTTP
-completion is an unknown outcome, never retried automatically. Stop is latched;
+expired/replayed commands and commands from a previous server boot. Unconfirmed
+command completion is an unknown outcome, never retried automatically. Stop is latched;
 resume must be explicit and does not move the body.
 
 The stock hardware has no assumed IMU, depth, foot contact, joint feedback or

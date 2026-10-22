@@ -1,6 +1,7 @@
 # Crab companion foundation
 
-Status: milestone 1 software implemented and validated (133 focused tests plus HTTP simulator); no Pi/Jetson hardware validation.
+Status: milestone 1 plus live-feed/WebSocket follow-ups implemented and software
+validated; see [dated validation](VALIDATION.md). No Pi/Jetson hardware validation.
 Baseline: branch `work`, inspected 2026-10-22. This plan supersedes contradictory
 “done” and roadmap claims in the old README/CLAUDE guidance.
 
@@ -30,10 +31,15 @@ All reported defects were reconfirmed in the baseline implementation:
 
 Pi owns vendor motion, calibration, power limits, interruption at vendor/leg
 boundaries, sensor capture and speaker playback. Jetson owns interpretation,
-local speech and one behavior coordinator. HTTP carries bounded primitives and
-short-lived command leases, never servo trajectories. A server boot identity,
+local speech and one behavior coordinator. One local WebSocket carries status,
+input events, bounded primitives and short-lived command leases, never servo
+trajectories. HTTP remains the independent stop/readiness/media path; browser
+telemetry uses SSE. A server boot identity,
 command IDs and outcomes distinguish restart, rejected commands and uncertain
 network completion. Stop is independent of queued social activity.
+Per-boot stop epochs preserve each input's original authority: newer status
+cannot turn an old resume into a post-stop instruction. Queues are bounded and
+reconnect requires explicit recovery. See the [transport contract](websocket-transport.md).
 
 Each captured input carries provenance, timestamps, availability and failure.
 The coordinator explicitly records whether it used an input and why it ignored
@@ -61,6 +67,8 @@ are backed up for explicit migrations/reset and remain inspectable/exportable.
    bounded motion/audio, stop/expiry/reconnect handling, timed interaction,
    provenance-aware memory, dashboard explanations, deterministic scenarios.
    Validate with unit + HTTP integration + simulator, then stop at hardware gate.
+   Reviewable follow-ups add latest-only feeds and the local WebSocket channel;
+   their host measurements are recorded separately from physical acceptance.
 2. **Hardware acceptance PR.** Inventory exact HAT revision and installed vendor
    versions; verify read-only sensors and ALSA/service permissions; approved
    direct sound and endpoint tests; only then approved supported poses/one-cycle

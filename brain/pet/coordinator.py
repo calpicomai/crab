@@ -8,9 +8,11 @@ cannot block receipt of a stop. The Pi determines the safe interruption point.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from shared.companion import Intent, IntentionName, IntentionStatus, MindOutput
 from shared.health import InputHealth, unavailable
@@ -24,18 +26,27 @@ def _dict(value):
     return value.model_dump(mode="json") if hasattr(value, "model_dump") else dict(value)
 
 
+@dataclass
+class _ResumeOutcome:
+    response: dict | None = None
+    error: str | None = None
+    cleanup_stop: dict | None = None
+    cleanup_error: str | None = None
+
+
 class Coordinator:
     """Tick from one thread. Worker threads only return command results."""
 
     def __init__(self, client, voice, identity=None, *, clock=time.monotonic,
                  wall_clock=time.time, control_client=None, mode="interaction",
-                 motion_enabled=False, continuity=None):
+                 motion_enabled=False, continuity=None, transport_source="robot HTTP"):
         if mode not in {"interaction", "quiet"}:
             raise ValueError("only interaction and quiet companionship are implemented")
         self.client, self.control_client = client, control_client or client
         self.voice, self.identity = voice, identity
         self.clock, self.wall_clock = clock, wall_clock
         self.mode, self.motion_enabled = mode, motion_enabled
+        self.transport_source = transport_source
         self.mood = Mood(clock=clock, traits=getattr(identity, "seed_traits", []))
         continuity = continuity or {}
         self.mood.interactions = max(0, int(continuity.get("engagements", 0)))
@@ -44,8 +55,9 @@ class Coordinator:
         self._episode_reply = ""
         self._motion_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-motion")
         self._control_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-stop")
-        self._motion = self._control = None
-        self._deferred_stop = None
+        self._resume_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-resume")
+        self._motion = self._control = self._resume = None
+        self._resume_cancelled = None
         self._coalesced_stops = []
         self._pending = []
         self._history = deque(maxlen=60)
@@ -117,25 +129,58 @@ class Coordinator:
         self._interaction_wall = self.wall_clock()
         self._cancel_pending(intent.reason or "stop")
         self.voice.stop()
+        if self._resume:
+            self._finish(self._resume[0], "cancelled", "stop superseded resume")
+            self._resume_cancelled.set()
+        # Fence an RPC still acquiring a lease before issuing the independent
+        # urgent HTTP stop. Cancelling a Future cannot kill an executing RPC.
+        if hasattr(self.control_client, "cancel_commands"):
+            self.control_client.cancel_commands()
         intent.status = IntentionStatus.ACTIVE
         if self._control:
-            if self._control[0].kind == IntentionName.RESUME:
-                self._finish(self._control[0], "cancelled", "stop superseded resume")
-                if self._deferred_stop is None:
-                    self._deferred_stop = intent
-                else:
-                    self._coalesced_stops.append(intent)
-            else:
-                self._coalesced_stops.append(intent)
+            self._coalesced_stops.append(intent)
         else:
-            self._control = (intent, self._control_pool.submit(self.control_client.stop))
+            self._control = (intent, self._control_pool.submit(self._send_stop))
+
+    def _send_stop(self):
+        # A fresh bounded HTTP connection remains available after the normal
+        # transport has closed. Fakes/older clients retain their stop interface.
+        stop = getattr(self.control_client, "emergency_stop", self.control_client.stop)
+        return stop()
+
+    def _run_resume(self, cancelled, expected_control_epoch=None):
+        """Only return results to the owner thread; never resume/retry on failure."""
+        outcome = _ResumeOutcome()
+        try:
+            if cancelled.is_set():
+                outcome.error = "resume cancelled before dispatch"
+            else:
+                # Preserve the event's original Pi epoch through queueing and
+                # lease acquisition. A newer status must never grant an old
+                # pre-stop resume permission to clear that stop.
+                kwargs = ({"expected_control_epoch": expected_control_epoch}
+                          if expected_control_epoch is not None else {})
+                outcome.response = _dict(self.control_client.resume(**kwargs))
+        except Exception as exc:
+            outcome.error = str(exc)[:200]
+        finally:
+            # This runs even after Coordinator.close(). A late RPC may have an
+            # unknown physical outcome; only STOP is repeated as cleanup.
+            if cancelled.is_set():
+                try:
+                    outcome.cleanup_stop = _dict(self._send_stop())
+                except Exception as exc:
+                    outcome.cleanup_error = str(exc)[:200]
+        return outcome
 
     def connection_lost(self, reason="robot unavailable"):
         self._status_at = None
         self.target = None
-        self.inputs["transport"] = self._missing(reason, source="robot HTTP").snapshot(self.wall_clock())
+        self.inputs["transport"] = self._missing(reason, source=self.transport_source).snapshot(self.wall_clock())
         self.blocked_reason = reason
-        if not self.stopped:
+        resume_active = self._resume and self._resume[0].status != IntentionStatus.CANCELLED
+        resume_pending = any(intent.kind == IntentionName.RESUME for intent in self._pending)
+        if not self.stopped or resume_active or resume_pending:
             self.request("stop", source="safety", reason=reason)
 
     def observe(self, status, snapshot=None):
@@ -148,8 +193,17 @@ class Coordinator:
                 and self._last_status_observed_at is not None
                 and observed_at <= self._last_status_observed_at):
             return  # an older poll cannot undo an acknowledged control transition
+        epoch = status.get("control_epoch")
+        previous_epoch = self._status.get("control_epoch")
+        epoch_advanced = (status.get("boot_id") == self._boot_id
+                          and type(epoch) is int and type(previous_epoch) is int
+                          and epoch > previous_epoch)
         self._status = status
-        self._status_at = self.clock()
+        producer_age = self.wall_clock() - observed_at if self._number(observed_at) else None
+        # Receipt cannot refresh an old producer sample. Missing timestamps are
+        # reported unavailable below; strict WS transport rejects them earlier.
+        self._status_at = self.clock() - producer_age if producer_age is not None and producer_age >= 0 else (
+            self.clock() if producer_age is None else None)
         if self.blocked_reason == "waiting for robot status":
             self.blocked_reason = ""
         boot = self._status.get("boot_id")
@@ -157,6 +211,20 @@ class Coordinator:
             self.request("stop", source="safety", reason="Pi restarted; explicit resume required")
         self._boot_id = boot
         self._last_status_observed_at = observed_at if self._number(observed_at) else None
+        if epoch_advanced:
+            # An RPC can finish before the transport sees STOP, then wait for
+            # this owner thread to poll it. Its old success cannot clear a newer
+            # stop. Preserve explicit resumes originating in the new epoch.
+            reason = "Pi control epoch changed; earlier resume cancelled"
+            self._cancel_obsolete(lambda intent: intent.kind == IntentionName.RESUME
+                                  and intent.payload.get("control_epoch") != epoch, reason)
+            if self._resume and self._resume[0].payload.get("control_epoch") != epoch:
+                self._finish(self._resume[0], "cancelled", reason)
+                self._resume_cancelled.set()
+            self.stopped = True
+            self.phase = "stopped"
+            self.blocked_reason = "Pi stop generation changed; explicit fresh resume required"
+            self.target = None
         if self._status.get("motion_state", {}).get("stop_latched") and not self.stopped:
             self.stopped = True
             self.phase = "stopped"
@@ -165,9 +233,13 @@ class Coordinator:
             self.target = None
         self.inputs = {name: self._input(raw, used=False, why="not used by stationary behavior")
                        for name, raw in self._status.get("inputs", {}).items()}
-        self.inputs["transport"] = InputHealth(available=True, provenance="real",
-            captured_at=self.wall_clock(), max_age_s=2.0, source="robot HTTP",
-            used=True, ignored_reason=None).snapshot(self.wall_clock())
+        self.inputs["transport"] = InputHealth(available=producer_age is not None,
+            provenance="real", captured_at=observed_at if self._number(observed_at) else None,
+            received_at=self.wall_clock(), max_age_s=2.0, source=self.transport_source,
+            failure_reason="producer status timestamp unavailable" if producer_age is None else None,
+            used=producer_age is not None and 0 <= producer_age <= 2,
+            ignored_reason=None if producer_age is not None and 0 <= producer_age <= 2 else
+                "producer status timestamp missing, future or stale").snapshot(self.wall_clock())
         for name in ("battery", "ultrasonic", "camera", "microphone", "interpretation"):
             self.inputs.setdefault(name, self._missing("no health metadata", source=name).snapshot(self.wall_clock()))
         for name in ("battery", "ultrasonic"):
@@ -293,7 +365,7 @@ class Coordinator:
         self.phase = "notice"
         self._phase_until = self.clock() + self.mood.temperament.hesitation_s
 
-    def hear(self, text, *, source="operator"):
+    def hear(self, text, *, source="operator", control_epoch=None):
         text = str(text).strip()[:1000]
         if not text:
             return None
@@ -311,7 +383,8 @@ class Coordinator:
         if name in {"stop", "stay", "scold"}:
             return self.request("stop", reason="user requested stop")
         if name == "resume":
-            return self.request("resume", reason="user explicitly resumed")
+            return self.request("resume", reason="user explicitly resumed",
+                                payload={"control_epoch": control_epoch} if control_epoch is not None else None)
         if self.stopped:
             return self.request("acknowledge", reason="engagement while stopped")
         self.mood.event("praise" if name == "praise" else "play" if name == "play" else "engagement")
@@ -386,14 +459,25 @@ class Coordinator:
         return intent
 
     def _poll(self):
-        for attr in ("_motion", "_control"):
+        for attr in ("_motion", "_resume", "_control"):
             pair = getattr(self, attr)
             if pair is None or not pair[1].done():
                 continue
             intent, future = pair
             setattr(self, attr, None)
             try:
-                result = _dict(future.result())
+                completed = future.result()
+                if attr == "_resume":
+                    if completed.cleanup_stop is not None:
+                        self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
+                            "reason": "stop after cancelled resume returned", "response": completed.cleanup_stop})
+                    if completed.cleanup_error:
+                        self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
+                            "outcome": "unknown", "reason": "late resume cleanup stop unconfirmed: " + completed.cleanup_error})
+                    if completed.error:
+                        raise RuntimeError(completed.error)
+                    completed = completed.response
+                result = _dict(completed)
                 self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
                                         "response": result})
                 was_cancelled = intent.status == IntentionStatus.CANCELLED
@@ -425,22 +509,20 @@ class Coordinator:
                     for waiting in self._coalesced_stops:
                         self._finish(waiting, "failed", reason)
                     self._coalesced_stops.clear()
-            if attr == "_control" and self._deferred_stop is not None:
-                stop = self._deferred_stop
-                self._deferred_stop = None
-                self._control = (stop, self._control_pool.submit(self.control_client.stop))
 
     def _execute(self, intent):
         intent.status = IntentionStatus.ACTIVE
         kind = intent.kind.value
         if kind == "resume":
-            if self._control or self._motion:
+            if self._control or self._motion or self._resume:
                 intent.status = IntentionStatus.PENDING
                 return False
             if self._status_at is None or self.clock() - self._status_at > 2.0:
                 self._finish(intent, "blocked", "cannot resume without fresh robot connection")
             else:
-                self._control = (intent, self._control_pool.submit(self.control_client.resume))
+                self._resume_cancelled = threading.Event()
+                self._resume = (intent, self._resume_pool.submit(self._run_resume, self._resume_cancelled,
+                                                               intent.payload.get("control_epoch")))
             return True
         if self.stopped:
             self._finish(intent, "blocked", "stop latched; explicit resume required")
@@ -566,6 +648,10 @@ class Coordinator:
         if self._motion:
             self._movements.append({"intention_id": self._motion[0].id, "at": self.wall_clock(),
                                     "outcome": "unknown", "reason": "shutdown before movement result; Pi stop requested"})
+        if self._resume:
+            self._movements.append({"intention_id": self._resume[0].id, "at": self.wall_clock(),
+                "outcome": "unknown", "reason": "shutdown before resume result; immediate and late-cleanup stops requested"})
         self._closed = True
         self._motion_pool.shutdown(wait=False, cancel_futures=True)
+        self._resume_pool.shutdown(wait=False, cancel_futures=True)
         self._control_pool.shutdown(wait=False, cancel_futures=False)

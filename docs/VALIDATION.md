@@ -1,7 +1,8 @@
 # Milestone 1 validation — 2026-10-22
 
-**Passed after the live-feed follow-up:** 169 focused unit/integration tests, existing off-body checks, nine
-deterministic scenarios and the isolated HTTP simulator smoke. No physical
+**Passed after the live-feed and WebSocket follow-ups:** 251 focused
+unit/integration tests, existing off-body checks, nine deterministic scenarios
+and the isolated HTTP/WebSocket simulator smoke. No physical
 robot or inference model was used. Hardware acceptance remains pending.
 
 Executed from repository root:
@@ -14,6 +15,8 @@ git diff --check
 brain/.venv/bin/python -m brain.pet.scenarios --all --summary --output docs/evidence/scenarios.json
 brain/.venv/bin/python -m brain.pet.benchmark --iterations 30 --output docs/evidence/coordinator-benchmark.json
 brain/.venv/bin/python -m robot.audio
+brain/.venv/bin/python -m brain.realtime_benchmark --output docs/evidence/realtime-benchmark.json
+brain/.venv/bin/python tests/browser_live_feed.py --output-dir /tmp/crab-websocket-browser
 ```
 
 The dashboard script and all HTML inline handlers were extracted and parsed with
@@ -32,6 +35,24 @@ and HTTP errors, reordered/restarted audio, STT/playback overlap, model expiry a
 cleanup, migration/backups and restart continuity. The live HTTP simulation also
 feeds a dashboard greeting through the actual runtime, confirms acknowledgement,
 confirms “good crab, stop” overrides praise, and resumes explicitly.
+
+The companion smoke now requires a ready WebSocket session. Thirteen actual
+loopback socket tests cover leases, ownership, independent HTTP stop, heartbeat
+expiry, loss during an active command and reconnect without replay. Further
+threaded regressions cover completed-but-unconsumed resume results after stop,
+old input epochs in transit and Pi restart resetting its epoch. Readiness tests
+confirm compatibility checks never open a control connection or request sound.
+The repeated Chromium check displays WebSocket health from a labelled fixture,
+with no JavaScript exceptions or mobile overflow and at most one camera request
+in flight; see [browser evidence](evidence/websocket-browser.json).
+
+[WebSocket event measurements](websocket-transport.md) compare the previous
+10 Hz HTTP input worker with the production WebSocket client using 24 events per
+path on one explicit simulated server: median **52.965 → 2.273 ms**, p95
+**101.256 → 3.294 ms**. This is submission-to-input-callback time on the development
+host, not physical reaction time. Status sampling remains 5 Hz. Combined fixture
+RSS was 50.96 MiB with no models; Pi/Jetson CPU, shared RAM and inference latency
+remain unmeasured.
 
 Scenario fixtures use a virtual clock and inline fake execution for reproducible
 traces. They are separate from the threaded concurrency and HTTP tests. The

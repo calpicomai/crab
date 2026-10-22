@@ -458,7 +458,9 @@ function paint(now){
     const age=latestState?telemetryAge(latestState):Infinity;
     const receivedAge=latestState?receiptAge(latestState):Infinity;
     const pipeline=latestState?.brain?.pipeline?.streams||{};
-    $("feed-stats").textContent=`${stateHz.toFixed(1)} updates/s · companion source age ${Number.isFinite(age)?Math.round(age)+"ms":"unknown"} · Pi receipt age ${Number.isFinite(receivedAge)?Math.round(receivedAge)+"ms":"unknown"} · sensor request ${pipeline.status?.latency_ms??"—"}ms · detector request ${pipeline.perception?.latency_ms??"—"}ms`;
+    const link=latestState?.brain?.pipeline?.transport;
+    const linkText=link?.transport==="websocket"?`Pi WebSocket ${link.ready?"ready":link.connected?"waiting for status":"disconnected"} · round trip ${link.last_rtt_ms??"—"}ms${link.failure_reason?" · "+link.failure_reason:""}`:`sensor request ${pipeline.status?.latency_ms??"—"}ms`;
+    $("feed-stats").textContent=`${stateHz.toFixed(1)} updates/s · companion source age ${Number.isFinite(age)?Math.round(age)+"ms":"unknown"} · Pi receipt age ${Number.isFinite(receivedAge)?Math.round(receivedAge)+"ms":"unknown"} · ${linkText} · detector request ${pipeline.perception?.latency_ms??"—"}ms`;
     const cameraAge=cameraReceivedAt?Math.max(cameraAgeAtReceipt+now-cameraReceivedAt,stampAge(cameraCapturedAt)):Infinity;
     $("camera-stats").textContent=`${cameraProvenance} · ${cameraHz.toFixed(1)} fps · ${cameraRTT==null?"—":Math.round(cameraRTT)+"ms"} round trip · ${cameraReason||(!Number.isFinite(cameraAge)?"frame timing unknown":cameraAge>2000?"stale frame":"frame age ~"+Math.round(cameraAge)+"ms")}`;
     $("cam").style.opacity=cameraAge>2000?".45":"1";

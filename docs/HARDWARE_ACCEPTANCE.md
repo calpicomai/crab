@@ -27,6 +27,15 @@ actual results, installed versions, date, operator and any bounded error output.
   old data must be marked stale and recovery must show current state. Follow
   [live-feed measurements](live-feed-performance.md). Higher frame rates require
   measured headroom; a local browser simulation is not hardware evidence.
+- Confirm matching Pi/brain WebSocket protocol via read-only readiness. With
+  actuators disabled, check one companion session, dashboard round-trip/error
+  reporting, heartbeat timeout, Wi-Fi loss, process restart and fresh status on
+  reconnect. Old inputs/leases/results must not replay or clear stop; explicit
+  new resume must work after Pi reboot resets its per-boot stop epoch. Verify
+  independent HTTP stop under a slow/blocked socket. Record p50/p95 event delivery,
+  status capture duration and CPU/RAM using the
+  [WebSocket measurement method](websocket-transport.md). Opening and closing a
+  control WebSocket is an active stop boundary, not a read-only readiness probe.
 - Inspect ALSA configuration/devices, service-account groups/permissions and
   board-specific amplifier enable state using the read-only audio diagnostics.
   Follow the [six-layer audio guide](audio-acceptance.md); a missing driver is

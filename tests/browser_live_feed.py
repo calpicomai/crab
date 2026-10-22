@@ -139,6 +139,8 @@ def main(argv=None):
             fixture = {"name": "Latency fixture", "mood": "curious", "episode": {"phase": "listen"},
                        "battery_v": 7.4,
                        "mode": "interaction", "last_say": "Latest state arrived.",
+                       "pipeline": {"transport": {"transport": "websocket", "ready": True,
+                           "connected": True, "last_rtt_ms": 4.2, "failure_reason": None}},
                        "inputs": {"camera": {"available": True, "provenance": "simulated",
                            "fresh": True, "age_s": 0, "captured_at": time.time(),
                            "max_age_s": 2, "used": True},
@@ -156,6 +158,9 @@ def main(argv=None):
             report["post_to_visible_ms"] = round((time.monotonic()-started)*1000, 2)
             report["visible_name"] = cdp.value("document.querySelector('#petname').textContent")
             report["initial_feed_text"] = cdp.value("document.querySelector('#feed-state').textContent")
+            cdp.wait("document.querySelector('#feed-stats').textContent.includes('Pi WebSocket ready')")
+            report["websocket_health_visible"] = cdp.value("document.querySelector('#feed-stats').textContent.includes('round trip 4.2ms')")
+            assert report["websocket_health_visible"], report
             # Keep pumping CDP so completed requests are observed, not counted as a backlog.
             end = time.monotonic()+1.2
             while time.monotonic() < end:
