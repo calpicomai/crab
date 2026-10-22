@@ -1,6 +1,6 @@
 # Milestone 1 validation — 2026-10-22
 
-**Passed:** 133 focused unit/integration tests, existing off-body checks, nine
+**Passed after the live-feed follow-up:** 169 focused unit/integration tests, existing off-body checks, nine
 deterministic scenarios and the isolated HTTP simulator smoke. No physical
 robot or inference model was used. Hardware acceptance remains pending.
 
@@ -18,7 +18,11 @@ brain/.venv/bin/python -m robot.audio
 
 The dashboard script and all HTML inline handlers were extracted and parsed with
 `node --check`; a malformed play-button handler discovered by that check was
-corrected. Browser rendering and mobile interaction are not visually verified.
+corrected. The follow-up also checks real headless Chromium against an explicit
+local simulator: visible telemetry, one camera request at a time, stale timing,
+reconnect, JavaScript exceptions and mobile-width overflow. See
+[live-feed evidence and limits](live-feed-performance.md). This does not validate
+every mobile interaction or physical-camera latency.
 
 The focused suite covers real worker-thread interruption, stop/resume ordering,
 old semantic resume cancellation, command correlation/replay/expiry/restart,

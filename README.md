@@ -42,6 +42,12 @@ telemetry. A person label is only a detector observation, never enrollment or
 recognition. The dashboard and HTTP server are intended for a trusted local
 network; they do not provide internet-facing authentication.
 
+The dashboard streams telemetry and pulls the newest camera frame at up to
+10 updates per second. Slow detection does not hold up status or typed input;
+old pending frames/updates are replaced. Feed age, request timing and stale
+warnings are visible. See [live-feed measurements](docs/live-feed-performance.md)
+for reproducible latency checks and the remaining Pi/LAN/Jetson measurements.
+
 Voice/effects are opt-in through `PET_VOICE=1` or `--voice`. Effects work without
 Piper; speech additionally requires a local Piper binary and `.onnx` plus
 `.onnx.json` model. Missing Whisper/Piper/ALSA stays visibly unavailable. No audio

@@ -12,6 +12,7 @@ or via the systemd unit (robot/systemd/picrawler-server.service).
 
 from __future__ import annotations
 
+import json
 import logging
 import asyncio
 import threading
@@ -48,6 +49,7 @@ from shared import (
 from shared.health import InputHealth
 from shared.speech import interpret
 from .control import CommandLeases
+from .telemetry import TelemetryStore
 from . import config
 from .audio import PiMic, PiSpeaker
 from .camera import PiCamera
@@ -125,7 +127,7 @@ if mic is not None and speaker is not None:
 # world so the robot actually moves in a space and the sonar sees real obstacles.
 # A live dashboard is served at /sim. Not part of the robot<->brain protocol.
 sim_world = None
-_sim_brain: dict = {}  # latest telemetry pushed by the brain loop, for the dashboard
+_telemetry = TelemetryStore()
 if config.SIM_WORLD and engine.simulate:
     from .simworld import build_scenario
 
@@ -213,6 +215,7 @@ def health() -> dict[str, object]:
         "hardware_verified": False,
         "motion": status.motion_state,
         "inputs": {name: item.snapshot() for name, item in status.inputs.items()},
+        "camera_capture": camera.capture_settings if camera is not None else {"available": False},
         "audio": audio_health(),
         "limitations": ["no measured odometry or joint feedback", "no cliff guarantee",
                         "stop takes effect between vendor motion boundaries", "physical power cutoff required"],
@@ -227,20 +230,26 @@ def camera_stream() -> StreamingResponse:
     return StreamingResponse(
         camera.mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={"X-Crab-Provenance": "simulated" if camera.simulate else "real"},
+        headers={"X-Crab-Provenance": "simulated" if camera.simulate else "real",
+                 "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
 
 
 @app.get(CAMERA_FRAME_PATH)
 def camera_frame() -> Response:
-    """A single most-recent JPEG (handy for a quick check / low-rate pulls)."""
+    """One atomic newest JPEG/metadata sample; no stale server-side frame queue."""
     if camera is None:
-        return Response(status_code=503, content="camera disabled")
-    frame = camera.get_frame()
+        return Response(status_code=503, content="camera disabled", headers={"Cache-Control": "no-store"})
+    frame = camera.get_snapshot(timeout=0)
     if frame is None:
-        return Response(status_code=503, content="no frame yet")
-    return Response(content=frame, media_type="image/jpeg", headers={"X-Crab-Provenance": "simulated" if camera.simulate else "real",
-                 "X-Crab-Captured-At": str(camera.health().captured_at or 0)})
+        return Response(status_code=503, content="no fresh frame", headers={"Cache-Control": "no-store"})
+    return Response(content=frame.data, media_type="image/jpeg", headers={
+        "X-Crab-Provenance": frame.provenance,
+        "X-Crab-Captured-At": str(frame.captured_at),
+        "X-Crab-Sequence": str(frame.sequence),
+        "X-Crab-Frame-Age-Ms": str(round(max(0, time.time()-frame.captured_at)*1000, 1)),
+        "Cache-Control": "no-store, max-age=0", "X-Accel-Buffering": "no",
+    })
 
 
 @app.get(AUDIO_STREAM_PATH)
@@ -381,23 +390,40 @@ def sim_dashboard() -> Response:
     return HTMLResponse(DASHBOARD_HTML)
 
 
+def _dashboard_state() -> dict:
+    brain, revision = _telemetry.snapshot()
+    now = time.time()
+    state = {"enabled": sim_world is not None,
+             **(sim_world.state() if sim_world is not None else {}),
+             "brain": brain, "revision": revision, "server_at": now, "server_boot_id": leases.boot_id,
+             "telemetry_age_ms": None if not brain else round(max(0, now-brain["_received_at"])*1000, 1)}
+    return state
+
+
 @app.get("/sim/state")
-def sim_state() -> dict:
-    if sim_world is None:
-        # No 2D world (real robot): still hand the dashboard the pushed telemetry
-        # so its camera/costmap/pet panels render; enabled=False tells the page to
-        # skip the top-down map and use the costmap radar instead.
-        return {"enabled": False, "brain": _sim_brain}
-    return {"enabled": True, **sim_world.state(), "brain": _sim_brain}
+def sim_state() -> Response:
+    return JSONResponse(_dashboard_state(), headers={"Cache-Control": "no-store"})
+
+
+async def _dashboard_events(request: Request):
+    # No per-viewer event queue or historical replay. Slow readers resume with
+    # the newest snapshot after backpressure clears. Browser rendering is bounded too.
+    while not await request.is_disconnected():
+        state = _dashboard_state()
+        yield "event: state\ndata: " + json.dumps(state, separators=(",", ":"), allow_nan=False) + "\n\n"
+        await asyncio.sleep(0.1)
+
+
+@app.get("/sim/events")
+async def sim_events(request: Request) -> StreamingResponse:
+    return StreamingResponse(_dashboard_events(request), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+    })
 
 
 @app.post("/sim/brain")
 def sim_brain(payload: dict) -> dict:
-    """The brain pushes telemetry (mood, gesture, costmap, narration, ...) here."""
-    _sim_brain.clear()
-    _sim_brain.update(payload or {})
-    _sim_brain["_received_at"] = time.time()
-    return {"ok": True}
+    return _telemetry.publish(payload)
 
 
 @app.post("/sim/obstacle")

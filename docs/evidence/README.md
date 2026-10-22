@@ -1,9 +1,15 @@
 # Software evidence (2026-10-22)
 
-These artifacts exercise the companion coordinator with explicit simulated inputs
-and a virtual clock on an x86_64 development VM. They are not hardware acceptance.
+These artifacts exercise the companion coordinator with explicit simulated inputs,
+plus dashboard delivery with delay fixtures and a local Chromium browser on an
+x86_64 development VM. Coordinator scenarios use a virtual clock. They are not hardware acceptance.
 No actuator, physical speaker, microphone, detector model, or language model was
 used to produce them.
+
+`live-feed-benchmark.json` compares the previous serial polling/unbounded publisher
+with bounded independent delivery under injected delays. `live-dashboard-browser.json`
+and `.png` record the actual local browser checks. Reproduction commands and the
+timing boundaries are in [live-feed performance](../live-feed-performance.md).
 
 Reproduce from the repository root:
 

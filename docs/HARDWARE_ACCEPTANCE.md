@@ -20,6 +20,13 @@ actual results, installed versions, date, operator and any bounded error output.
   measurement before relying on thresholds. No guessed ADC scale fallback.
 - Verify camera/detector capture stamps survive transport and stale/dropout
   evidence is ignored. Confirm unsupported capabilities are not claimed.
+- With actuators still disabled, measure dashboard delivery on the actual LAN:
+  Pi camera rate/encode time, CPU/RAM, encoded-frame age, typed-input latency,
+  detector time and connection recovery. Verify clocks agree before trusting
+  cross-device source ages. Exercise a slow detector and network interruption;
+  old data must be marked stale and recovery must show current state. Follow
+  [live-feed measurements](live-feed-performance.md). Higher frame rates require
+  measured headroom; a local browser simulation is not hardware evidence.
 - Inspect ALSA configuration/devices, service-account groups/permissions and
   board-specific amplifier enable state using the read-only audio diagnostics.
   Follow the [six-layer audio guide](audio-acceptance.md); a missing driver is

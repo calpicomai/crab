@@ -1,7 +1,7 @@
 """The simulator dashboard — a single self-contained HTML page (canvas + panels +
 vanilla JS/CSS, no external deps, CSP-safe) served at GET /sim.
 
-It polls GET /sim/state ~7 Hz and shows the physical sim (top-down map, path,
+It subscribes to a latest-only state stream and shows the physical sim (top-down map, path,
 sonar cone, live camera) alongside the brain's inner life (mood, gesture,
 character, costmap histogram, narration) pushed via POST /sim/brain. Interactive:
 click the map to drop an obstacle in the robot's path, pause/resume/reset, switch
@@ -52,6 +52,7 @@ DASHBOARD_HTML = r"""
   <b>🦀 crab · simulator</b>
   <span id="petname" class="pill">…</span>
   <span id="mode" class="pill">…</span>
+  <span id="feed-state" class="pill">connecting…</span>
   <span class="sp"></span>
   <button onclick="stopCompanion()" style="border-color:#e5533d">Stop companion</button>
   <button onclick="sendText('resume')">Resume</button>
@@ -104,10 +105,13 @@ DASHBOARD_HTML = r"""
     </div>
     <div class="panel" style="margin-top:12px">
       <h3>Camera (first-person)</h3>
-      <img id="cam" alt="camera">
+      <img id="cam" alt="Latest camera frame">
+      <div id="camera-stats" class="hint">waiting for camera</div>
     </div>
     <div class="panel" style="margin-top:12px">
       <h3>Telemetry</h3>
+      <div id="feed-stats" class="hint" style="margin-bottom:8px">waiting for live data</div>
+      <div class="hint" style="margin-bottom:8px">Capture ages require synchronized clocks on the Pi, Jetson and this browser. Unknown timing is never fresh.</div>
       <div class="kv" id="telkv"></div>
       <canvas id="spark" width="600" height="46" style="margin-top:8px"></canvas>
     </div>
@@ -133,7 +137,108 @@ const $=id=>document.getElementById(id);
 let W=300,H=300, dist=[], lastSay="", lastAction="", lastMood="";
 let battHist=[], moodHist=[], acts={}, sights={}, lastTgt="";
 const MOODCLR={curious:"#4bd",excited:"#e5b33d",playful:"#7ed957",cautious:"#e58b3d",startled:"#e5533d",bored:"#8b98a5",sleepy:"#5566aa"};
-$("cam").src="/camera/stream";
+// Keep one latest state and one camera request/decode in flight. Neither path
+// queues historical frames; hidden tabs release their streams and connections.
+let latestState=null, stateStream=null, stateReceivedAt=0, streamConnected=false;
+let stateMessages=0, stateHz=0, cameraFrames=0, cameraHz=0, metricStart=performance.now();
+let cameraAbort=null, cameraTimer=null, cameraRunning=false, cameraURL=null;
+let cameraSequence=null, cameraReceivedAt=0, cameraAgeAtReceipt=0, cameraRTT=null;
+let cameraCapturedAt=null;
+let cameraReason="waiting for camera", cameraProvenance="unknown", cameraSession=0;
+let lastGraphRevision=null;
+
+function nonnegative(value){return typeof value==="number"&&Number.isFinite(value)&&value>=0;}
+function stampAge(stamp){
+  const now=Date.now()/1000;
+  return typeof stamp==="number"&&Number.isFinite(stamp)&&stamp>0&&stamp<=now?(now-stamp)*1000:Infinity;
+}
+function serverAge(s){
+  const elapsed=performance.now()-s.receivedPerf;
+  if(!nonnegative(elapsed)||!nonnegative(s.serverAgeAtReceipt))return Infinity;
+  return Math.max(stampAge(s.server_at),s.serverAgeAtReceipt+elapsed);
+}
+function receiptAge(s){
+  // Server receipt and browser delivery are separate events. Include the time
+  // the SSE frame spent buffered in the transport instead of resetting its age.
+  if(!nonnegative(s.telemetry_age_ms))return Infinity;
+  return Math.max(stampAge(s.brain?._received_at),s.telemetry_age_ms+serverAge(s));
+}
+function telemetryAge(s){
+  const elapsed=performance.now()-s.receivedPerf;
+  if(!nonnegative(elapsed)||!nonnegative(s.sourceAgeAtReceipt))return Infinity;
+  return Math.max(receiptAge(s),stampAge(s.brain?._produced_at),s.sourceAgeAtReceipt+elapsed);
+}
+function inputTiming(s,h){
+  if(!h||!nonnegative(h.age_s)||!nonnegative(h.max_age_s))return {age:Infinity,fresh:false};
+  const age=Math.max(stampAge(h.captured_at),h.age_s*1000+telemetryAge(s))/1000;
+  return {age,fresh:!!h.available&&!!h.fresh&&Number.isFinite(age)&&age<=h.max_age_s&&telemetryAge(s)<=3000};
+}
+function connectState(){
+  if(document.hidden||stateStream)return;
+  stateStream=new EventSource("/sim/events");
+  stateStream.onopen=()=>{streamConnected=true;};
+  stateStream.addEventListener("state",event=>{
+    try{
+      const state=JSON.parse(event.data);
+      if(latestState&&latestState.server_boot_id===state.server_boot_id&&state.revision<latestState.revision)return;
+      if(latestState&&latestState.server_boot_id!==state.server_boot_id)cameraSequence=null;
+      state.receivedPerf=performance.now();
+      state.serverAgeAtReceipt=stampAge(state.server_at);
+      state.sourceAgeAtReceipt=stampAge(state.brain?._produced_at);
+      latestState=state;stateReceivedAt=state.receivedPerf;stateMessages++;
+    }catch(e){streamConnected=false;}
+  });
+  stateStream.onerror=()=>{streamConnected=false;}; // EventSource reconnects; no replay queue.
+}
+
+async function nextCamera(){
+  if(document.hidden||cameraRunning)return;
+  cameraRunning=true;
+  const session=cameraSession, controller=new AbortController();cameraAbort=controller;
+  const started=performance.now();const timeout=setTimeout(()=>controller.abort(),1500);
+  let newURL=null, retry=100;
+  try{
+    const response=await fetch("/camera/frame",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error(response.status===503?"camera unavailable":"camera HTTP "+response.status);
+    const sequence=response.headers.get("X-Crab-Sequence");
+    const ageHeader=response.headers.get("X-Crab-Frame-Age-Ms");
+    const captureHeader=response.headers.get("X-Crab-Captured-At");
+    const age=ageHeader===null?NaN:Number(ageHeader);
+    const capturedAt=captureHeader===null?NaN:Number(captureHeader);
+    const blob=await response.blob();
+    if(session!==cameraSession||document.hidden)return;
+    cameraRTT=performance.now()-started;
+    if(sequence!==cameraSequence){
+      newURL=URL.createObjectURL(blob);
+      // Decode off-screen so slow decode never holds up state/stop controls.
+      const decoded=new Image();decoded.src=newURL;await decoded.decode();
+      if(session!==cameraSession||document.hidden)return;
+      const oldURL=cameraURL;cameraURL=newURL;newURL=null;
+      $("cam").src=cameraURL;if(oldURL)URL.revokeObjectURL(oldURL);
+      cameraSequence=sequence;cameraReceivedAt=performance.now();
+      cameraCapturedAt=capturedAt;
+      cameraAgeAtReceipt=Math.max(nonnegative(age)?age+(cameraReceivedAt-started):Infinity,stampAge(capturedAt));
+      cameraProvenance=response.headers.get("X-Crab-Provenance")||"unknown";
+      cameraFrames++;
+    }
+    cameraReason="";
+  }catch(e){cameraReason=e.name==="AbortError"?"camera request timed out":e.message;retry=700;}
+  finally{
+    clearTimeout(timeout);if(newURL)URL.revokeObjectURL(newURL);
+    cameraAbort=null;cameraRunning=false;
+    if(!document.hidden)cameraTimer=setTimeout(nextCamera,Math.max(0,retry-(performance.now()-started)));
+  }
+}
+function pauseFeeds(){
+  if(stateStream)stateStream.close();stateStream=null;streamConnected=false;
+  cameraSession++;if(cameraAbort)cameraAbort.abort();clearTimeout(cameraTimer);
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)pauseFeeds();else{connectState();nextCamera();}
+});
+window.addEventListener("pagehide",pauseFeeds);
+window.addEventListener("pageshow",()=>{if(!document.hidden){connectState();nextCamera();}});
+
 
 async function sendText(text){
   text=text||$("engagement").value.trim();if(!text)return;
@@ -273,16 +378,22 @@ function spark(){const c=$("spark"),g=c.getContext("2d");g.clearRect(0,0,c.width
     i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
   g.fillStyle="#8b98a5";g.fillText("forward clearance (0–150cm)",6,12);}
 
-async function tick(){
-  let s; try{s=await (await fetch("/sim/state")).json();}catch(e){return;}
+function renderState(s){
   const worldOn=!!s.enabled;
   document.body.classList.toggle("no-world",!worldOn);
   const b=s.brain||{};
-  const telemetryStale=!b._received_at || Date.now()/1000-b._received_at>3;
-  $("episode").textContent=telemetryStale?"companion telemetry unavailable or stale":b.stopped?"stopped — explicit resume required":(b.episode?.phase||"waiting for companion");
+  const sourceAge=telemetryAge(s),telemetryStale=sourceAge>3000;
+  const timingUnknown=!Number.isFinite(sourceAge);
+  const graphRevision=s.server_boot_id+":"+s.revision;
+  const newSample=lastGraphRevision!==graphRevision;
+  if(newSample)lastGraphRevision=graphRevision;
+  $("episode").textContent=timingUnknown?"companion timing unknown — check synchronized clocks":telemetryStale?"companion telemetry unavailable or stale":b.stopped?"stopped — explicit resume required":(b.episode?.phase||"waiting for companion");
   $("blocked").textContent=b.blocked_reason||"Stillness is intentional.";
   $("evidence").textContent=worldOn?"Explicit kinematic simulation; movement estimates are idealized. No hardware verification.":"Real deployment: hardware acceptance is pending; input availability is not a safety guarantee.";
-  $("inputs").innerHTML=Object.entries(b.inputs||{}).map(([name,h])=>`<tr><td>${esc(name)}</td><td>${esc(h.provenance||"unknown")} · ${h.available?(!telemetryStale&&h.fresh&&Date.now()/1000-h.captured_at<=h.max_age_s?"fresh":"stale"):"unavailable"}${h.age_s!=null?" · "+esc(String(h.age_s))+"s":""}</td><td>${esc(h.used&&!telemetryStale?"used":(h.ignored_reason||h.failure_reason||"not used"))}</td></tr>`).join("");
+  $("inputs").innerHTML=Object.entries(b.inputs||{}).map(([name,h])=>{
+    const {age,fresh}=inputTiming(s,h);
+    return `<tr><td>${esc(name)}</td><td>${esc(h.provenance||"unknown")} · ${h.available?(fresh?"fresh":Number.isFinite(age)?"stale":"timing unknown"):"unavailable"}${Number.isFinite(age)?" · ~"+age.toFixed(1)+"s":""}</td><td>${esc(h.used&&fresh?"used":(h.ignored_reason||h.failure_reason||"stale or not used"))}</td></tr>`;
+  }).join("");
   $("intentions").textContent=(b.intentions||[]).slice(-6).map(i=>`${i.kind} · ${i.status} — ${i.result?.reason||i.reason}`).join("\n");
   $("audio-health").textContent=JSON.stringify({output:b.audio,hearing:b.hearing,mind:b.mind},null,2);
   // Map panel: the sim's top-down world when we have one, else a robot-centered
@@ -292,15 +403,20 @@ async function tick(){
   // telemetry + clearance sparkline (sim sonar, or the pet's pushed distance_cm)
   const son=s.sonar||{};
   const clr=worldOn?(son.distance||0):(b.distance_cm==null?null:b.distance_cm);
-  dist.push(clr||0); if(dist.length>120)dist.shift(); spark();
+  const sonarTiming=worldOn?{fresh:serverAge(s)<=2000,age:serverAge(s)/1000}:inputTiming(s,b.inputs?.ultrasonic);
+  const batteryTiming=inputTiming(s,b.inputs?.battery);
+  const clearanceText=clr==null?"—":clr+"cm"+(sonarTiming.fresh?"":Number.isFinite(sonarTiming.age)?" (stale)":" (timing unknown)");
+  const batteryText=batt(b)+(b.battery_v==null||batteryTiming.fresh?"":Number.isFinite(batteryTiming.age)?" (stale)":" (timing unknown)");
+  if(newSample&&!telemetryStale&&sonarTiming.fresh&&nonnegative(clr)){dist.push(clr);if(dist.length>120)dist.shift();}
+  spark();
   if(worldOn){
     $("telkv").innerHTML=kv({x:s.robot.x,y:s.robot.y,"θ":s.robot.heading+"°",
-      clearance:(son.distance||0)+"cm", reflex:b.reflex?"YES":"no",
-      battery:batt(b), paused:s.paused?"YES":"no", tick:b.tick??"—"});
+      clearance:clearanceText, reflex:b.reflex?"YES":"no",
+      battery:batteryText, paused:s.paused?"YES":"no", tick:b.tick??"—"});
   }else{
-    $("telkv").innerHTML=kv({clearance:clr==null?"—":clr+"cm",
-      camera:b.inputs?.camera?.used?"attention":"ignored", forward:"no locomotion",
-      reflex:b.reflex?"YES":"no", battery:batt(b), tick:b.tick??"—"});
+    $("telkv").innerHTML=kv({clearance:clearanceText,
+      camera:b.inputs?.camera?.used&&inputTiming(s,b.inputs.camera).fresh?"attention":"ignored", forward:"no locomotion",
+      reflex:b.reflex?"YES":"no", battery:batteryText, tick:b.tick??"—"});
   }
   $("mode").textContent=b.mode||"no brain";
   // pet
@@ -316,12 +432,14 @@ async function tick(){
     acts[b.action.split(" ")[0]]=(acts[b.action.split(" ")[0]]||0)+1;}   // action histogram
   if(b.mood&&b.mood!=lastMood){lastMood=b.mood;logLine("events","mood → "+b.mood);}
   // graphs
-  if(b.battery_v!=null){battHist.push(b.battery_v); if(battHist.length>120)battHist.shift();}
-  moodHist.push(b.mood||null); if(moodHist.length>120)moodHist.shift();
+  if(newSample&&!telemetryStale){
+    if(batteryTiming.fresh&&nonnegative(b.battery_v)){battHist.push(b.battery_v);if(battHist.length>120)battHist.shift();}
+    moodHist.push(b.mood||null);if(moodHist.length>120)moodHist.shift();
+  }
   if(b.target){const k=b.target.split(" ")[0]; if(k!=lastTgt) sights[k]=(sights[k]||0)+1; lastTgt=k;} else lastTgt="";
   drawVitals(); moodStrip(); bars("acts",acts); bars("sights",sights);
   $("perfkv").innerHTML=kv({
-    sonar:(b.distance_cm!=null?("live "+Math.round(b.distance_cm)+"cm"):"— no read"),
+    sonar:(clr!=null?((sonarTiming.fresh?"live ":Number.isFinite(sonarTiming.age)?"stale ":"timing unknown ")+Math.round(clr)+"cm"):"— no read"),
     reflex:(b.reflex?"stopped":"no guarantee"),
     think:(b.think_ms?b.think_ms+"ms":"—"),
     perceive:(b.perc_ms!=null?Math.round(b.perc_ms)+"ms":"—"),
@@ -331,7 +449,25 @@ function kv(o){return Object.entries(o).map(([k,v])=>`<span>${k}</span><span>${e
 function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function moodEmoji(m){return {curious:"🐕",excited:"🤩",playful:"🐩",cautious:"😟",startled:"😱",bored:"😑",sleepy:"😴"}[m]||"🐾";}
 function batt(b){return b.battery_v==null?"—":(b.battery_v.toFixed(1)+"V"+(b.battery_low?" ⚠":""));}
-setInterval(tick,140); tick();
+let lastPaint=0;
+function paint(now){
+  if(now-lastPaint>=100&&!document.hidden){
+    if(latestState)renderState(latestState);
+    const connected=streamConnected&&now-stateReceivedAt<1500;
+    $("feed-state").textContent=connected?"live connection":"reconnecting…";
+    const age=latestState?telemetryAge(latestState):Infinity;
+    const receivedAge=latestState?receiptAge(latestState):Infinity;
+    const pipeline=latestState?.brain?.pipeline?.streams||{};
+    $("feed-stats").textContent=`${stateHz.toFixed(1)} updates/s · companion source age ${Number.isFinite(age)?Math.round(age)+"ms":"unknown"} · Pi receipt age ${Number.isFinite(receivedAge)?Math.round(receivedAge)+"ms":"unknown"} · sensor request ${pipeline.status?.latency_ms??"—"}ms · detector request ${pipeline.perception?.latency_ms??"—"}ms`;
+    const cameraAge=cameraReceivedAt?Math.max(cameraAgeAtReceipt+now-cameraReceivedAt,stampAge(cameraCapturedAt)):Infinity;
+    $("camera-stats").textContent=`${cameraProvenance} · ${cameraHz.toFixed(1)} fps · ${cameraRTT==null?"—":Math.round(cameraRTT)+"ms"} round trip · ${cameraReason||(!Number.isFinite(cameraAge)?"frame timing unknown":cameraAge>2000?"stale frame":"frame age ~"+Math.round(cameraAge)+"ms")}`;
+    $("cam").style.opacity=cameraAge>2000?".45":"1";
+    if(now-metricStart>=1000){const seconds=(now-metricStart)/1000;stateHz=stateMessages/seconds;cameraHz=cameraFrames/seconds;stateMessages=cameraFrames=0;metricStart=now;}
+    lastPaint=now;
+  }
+  requestAnimationFrame(paint);
+}
+connectState();nextCamera();requestAnimationFrame(paint);
 </script>
 </body></html>
 """
