@@ -6,7 +6,7 @@ from shared.ACTION_PATHS so the client and server can never disagree.
 
 Run directly:
     PICRAWLER_SIMULATE=1 python -m robot.server        # dev / off-hardware
-    python -m robot.server                             # on the Pi (real servos)
+    python -m robot.server                             # real inputs; actuators disabled by default
 or via the systemd unit (robot/systemd/picrawler-server.service).
 """
 
@@ -21,7 +21,7 @@ import time
 from dataclasses import asdict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, ConfigDict, ValidationError
@@ -48,7 +48,9 @@ from shared import (
 
 from shared.health import InputHealth
 from shared.speech import interpret
+from shared.realtime import WS_PATH, MAX_MESSAGE_BYTES
 from .control import CommandLeases
+from .realtime import RealtimeHub
 from .telemetry import TelemetryStore
 from . import config
 from .audio import PiMic, PiSpeaker
@@ -66,6 +68,7 @@ control_transition_lock = threading.Lock()
 companion_events: queue.Queue = queue.Queue(maxsize=32)
 events_lock = threading.Lock()
 companion_urgent = None
+companion_event_generation = 0
 
 # Single engine instance, built at import and shared across requests.
 engine = GaitEngine(simulate=config.SIMULATE)
@@ -95,13 +98,13 @@ distance_sensor = (
 )
 
 # Wire the ultrasonic into the gait engine's reflex: walk() then checks forward
-# clearance between gait cycles and aborts early if something's too close. With no
-# sensor (disabled / simulate laptop) the reflex stays inert.
+# clearance between gait cycles and aborts early if something's too close.
+# Missing required clearance inhibits motion; only explicit simulation is synthetic.
 if distance_sensor is not None:
     engine.clearance_fn = distance_sensor.read_cm
 
-# Battery voltage monitor (optional) — reported on /status so the brain can slow/rest
-# the pet when the pack runs low. Missing robot_hat -> simulate (healthy voltage).
+# Battery voltage monitor (optional). Pi motion guards enforce power caps;
+# missing robot_hat or a failed read reports unknown and inhibits motion.
 battery_sensor = (
     BatterySensor(
         channel=config.BATTERY_ADC_CHANNEL,
@@ -115,7 +118,7 @@ battery_sensor = (
 engine.battery_fn = battery_sensor.read_v if battery_sensor is not None else lambda: None
 
 # Audio device (optional) — mic captured here + streamed to the brain (Whisper);
-# speaker plays WAVs the brain sends (Piper). Missing ALSA/device -> simulate.
+# speaker plays local WAVs. Missing ALSA/device remains explicitly unavailable.
 mic = PiMic(rate=config.MIC_RATE, device=config.MIC_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
 speaker = PiSpeaker(device=config.SPEAKER_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
 
@@ -164,11 +167,10 @@ def _status_with_distance():
 
 
 def _home_on_start() -> None:
-    """Gently move to config.HOME_ON_START so the robot doesn't sit splayed.
+    """Optional staged pose, off by default and subject to every Pi motion guard.
 
-    Runs the same staged, low-speed stand/sit as the commands. Skipped for
-    "none" / unrecognised values. This is why it's safe to auto-start via
-    systemd: only a controlled, one-leg-at-a-time motion happens at boot.
+    Physical startup motion requires explicit actuator/homing configuration at
+    the hardware acceptance gate. No startup vendor construction is automatic.
     """
     pose = config.HOME_ON_START
     if pose == "stand":
@@ -189,6 +191,7 @@ async def lifespan(_app: FastAPI):
         camera.start()
     _home_on_start()
     yield
+    await realtime_hub.close()
     if camera is not None:
         camera.stop()
 
@@ -217,6 +220,7 @@ def health() -> dict[str, object]:
         "inputs": {name: item.snapshot() for name, item in status.inputs.items()},
         "camera_capture": camera.capture_settings if camera is not None else {"available": False},
         "audio": audio_health(),
+        "realtime": realtime_hub.health(),
         "limitations": ["no measured odometry or joint feedback", "no cliff guarantee",
                         "stop takes effect between vendor motion boundaries", "physical power cutoff required"],
     }
@@ -287,7 +291,9 @@ def audio_stop(request: Request) -> Response:
                                  sequence=request.headers.get(AUDIO_SEQUENCE_HEADER))
     except ValidationError:
         return JSONResponse(status_code=422, content={"ok": False, "reason": "audio session and sequence headers required"})
-    leases.invalidate()
+    with control_transition_lock:
+        leases.invalidate()
+        realtime_hub.invalidate_commands()
     result = speaker.stop(**envelope.model_dump()) if speaker else {"ok": True, "played": False, "reason": "audio disabled"}
     return JSONResponse(result)
 
@@ -320,10 +326,21 @@ class CompanionEvent(BaseModel):
 @app.post(COMPANION_EVENTS_PATH)
 def companion_event(event: CompanionEvent) -> dict:
     global companion_urgent
+    control_epoch = leases.control_epoch
+    generation = companion_event_generation
     item = {"text": event.text, "timestamp": time.time(), "source": "dashboard"}
     command = interpret(event.text)
     urgent = command and command.name in {"stop", "stay", "scold"}
+    # STOP remains effective even if a slow companion cannot receive its text.
+    if urgent:
+        stop(StopCommand())
+        control_epoch = leases.control_epoch
     with events_lock:
+        if not urgent and generation != companion_event_generation:
+            return {"ok": False, "reason": "input preceded stop or session change"}
+        delivered = realtime_hub.publish_event(item, control_epoch=control_epoch, urgent=bool(urgent))
+        if delivered is not None:
+            return {"ok": delivered, **({} if delivered else {"reason": "companion event queue unavailable or full"})}
         if urgent:
             # Stop also works if the brain/model is down or its input queue is full.
             companion_urgent = item
@@ -334,8 +351,6 @@ def companion_event(event: CompanionEvent) -> dict:
                 companion_events.put_nowait(item)
             except queue.Full:
                 return {"ok": False, "reason": "input queue full"}
-    if urgent:
-        stop(StopCommand())
     return {"ok": True}
 
 
@@ -344,6 +359,8 @@ def read_companion_events() -> dict:
     global companion_urgent
     events = []
     with events_lock:
+        if realtime_hub.has_owner:
+            return {"events": [], "owner": "websocket"}
         if companion_urgent is not None:
             # A stop remains latched even if its text expires before delivery.
             events.append(companion_urgent)
@@ -457,90 +474,179 @@ def sim_control(body: ControlBody) -> dict:
     return {"ok": True, "paused": sim_world.paused}
 
 
-def _execute(action: Action, cmd, operation) -> CommandResponse:
+def _command_status(status_provider=None):
+    if status_provider is None:
+        return _status_with_distance()
+    # Results must describe the completed control transition, even if a sensor
+    # sample is slow. Preserve sensor capture times; refresh only Pi motion state.
+    status = engine.get_status()
+    cached = status_provider()
+    if cached is not None:
+        status.distance_cm = cached.distance_cm
+        status.battery_v = cached.battery_v
+        status.inputs = cached.inputs
+    status.observed_at = time.time()
+    status.boot_id = leases.boot_id
+    status.motion_state = engine.motion_state()
+    return status
+
+
+def _execute(action: Action, cmd, operation, *, authorize=None, status_provider=None) -> CommandResponse:
     # Reject contention instead of queueing a command that can become stale.
     if not command_lock.acquire(blocking=False):
         return CommandResponse(ok=False, action=action, command_id=cmd.command_id, detail="motion busy; command not queued")
     try:
-        if action == Action.RESUME:
-            # Without this ordering a resume could consume its old lease, then
-            # run after STOP and silently clear the newly established stop latch.
-            with control_transition_lock:
+        # Admission and RESUME share STOP's short transaction. Movements and
+        # sensor reads remain outside it so STOP never waits for a vendor gait.
+        with control_transition_lock:
+            reason = authorize() if authorize is not None else None
+            if reason is None:
                 reason = leases.consume(cmd.lease_id, cmd.command_id)
-                result = operation() if reason is None else None
-        else:
-            reason = leases.consume(cmd.lease_id, cmd.command_id)
-            result = operation() if reason is None else None
+            result = operation() if reason is None and action == Action.RESUME else None
         if reason:
             return CommandResponse(ok=False, action=action, command_id=cmd.command_id, detail=reason)
+        if action != Action.RESUME:
+            result = operation()
         motion = MotionResult.model_validate(asdict(result))
         return CommandResponse(ok=result.ok, action=action, command_id=cmd.command_id,
-                               detail=result.reason, motion=motion, status=_status_with_distance())
+                               detail=result.reason, motion=motion,
+                               status=_command_status(status_provider))
     finally:
         command_lock.release()
 
 
+def _dispatch(action: Action, cmd, authorize=None, status_provider=None) -> CommandResponse:
+    """One canonical operation mapping shared by HTTP and WebSocket dispatch."""
+    operations = {
+        Action.WALK: lambda: engine.walk(cmd.steps, cmd.speed, min_clearance_cm=cmd.min_clearance_cm),
+        Action.TURN: lambda: engine.turn(cmd.degrees, cmd.speed),
+        Action.TURN_STEPS: lambda: engine.turn_steps(cmd.direction, cmd.cycles, cmd.speed),
+        Action.STAND: engine.stand,
+        Action.SIT: engine.sit,
+        Action.RESUME: engine.resume,
+    }
+    if action in operations:
+        return _execute(action, cmd, operations[action], authorize=authorize, status_provider=status_provider)
+    if action == Action.STOP:
+        return stop(cmd)
+    if action == Action.GET_STATUS:
+        return CommandResponse(ok=True, action=action, command_id=cmd.command_id, detail="status",
+                               status=(status_provider or _status_with_distance)())
+    return CommandResponse(ok=False, action=action, command_id=cmd.command_id,
+                           detail="leg diagnostics are Pi-local and require explicit hardware approval")
+
+
 @app.post(ACTION_PATHS[Action.WALK], response_model=CommandResponse)
 def walk(cmd: WalkCommand) -> CommandResponse:
-    return _execute(Action.WALK, cmd, lambda: engine.walk(cmd.steps, cmd.speed, min_clearance_cm=cmd.min_clearance_cm))
+    return _dispatch(Action.WALK, cmd)
 
 
 @app.post(ACTION_PATHS[Action.TURN], response_model=CommandResponse)
 def turn(cmd: TurnCommand) -> CommandResponse:
-    return _execute(Action.TURN, cmd, lambda: engine.turn(cmd.degrees, cmd.speed))
+    return _dispatch(Action.TURN, cmd)
 
 
 @app.post(ACTION_PATHS[Action.TURN_STEPS], response_model=CommandResponse)
 def turn_steps(cmd: TurnStepsCommand) -> CommandResponse:
-    return _execute(Action.TURN_STEPS, cmd, lambda: engine.turn_steps(cmd.direction, cmd.cycles, cmd.speed))
+    return _dispatch(Action.TURN_STEPS, cmd)
 
 
 @app.post(ACTION_PATHS[Action.STAND], response_model=CommandResponse)
 def stand(cmd: StandCommand) -> CommandResponse:
-    return _execute(Action.STAND, cmd, engine.stand)
+    return _dispatch(Action.STAND, cmd)
 
 
 @app.post(ACTION_PATHS[Action.SIT], response_model=CommandResponse)
 def sit(cmd: SitCommand) -> CommandResponse:
-    return _execute(Action.SIT, cmd, engine.sit)
+    return _dispatch(Action.SIT, cmd)
 
 
 @app.post(ACTION_PATHS[Action.STOP], response_model=CommandResponse)
 def stop(cmd: StopCommand) -> CommandResponse:
     with control_transition_lock:
-        leases.invalidate()
+        leases.invalidate(advance_control_epoch=True)
+        realtime_hub.invalidate_commands()
         result = engine.stop()
+    _clear_companion_events()
     if speaker:
         speaker.stop()
     status = engine.get_status()
     status.observed_at = time.time()
     status.boot_id = leases.boot_id
     status.motion_state = engine.motion_state()
-    return CommandResponse(ok=True, action=Action.STOP, detail="stop latched; active vendor boundary may still be finishing",
+    return CommandResponse(ok=True, action=Action.STOP, command_id=cmd.command_id,
+                           detail="stop latched; active vendor boundary may still be finishing",
                            motion=MotionResult.model_validate(asdict(result)), status=status)
 
 
 @app.post(ACTION_PATHS[Action.RESUME], response_model=CommandResponse)
 def resume(cmd: ResumeCommand) -> CommandResponse:
-    return _execute(Action.RESUME, cmd, engine.resume)
+    return _dispatch(Action.RESUME, cmd)
 
 
 @app.post(ACTION_PATHS[Action.GET_STATUS], response_model=CommandResponse)
 def get_status(_cmd: GetStatusCommand) -> CommandResponse:
-    return CommandResponse(ok=True, action=Action.GET_STATUS, detail="status", status=_status_with_distance())
+    return _dispatch(Action.GET_STATUS, _cmd)
 
 
 @app.post(ACTION_PATHS[Action.TEST_LEG], response_model=CommandResponse)
 def test_leg(cmd: TestLegCommand) -> CommandResponse:
     # Maintenance stays Pi-local; the companion cannot calibrate or exercise legs.
-    return CommandResponse(ok=False, action=Action.TEST_LEG, detail="leg diagnostics are Pi-local and require explicit hardware approval")
+    return _dispatch(Action.TEST_LEG, cmd)
+
+
+def _clear_companion_events():
+    global companion_urgent, companion_event_generation
+    with events_lock:
+        companion_event_generation += 1
+        companion_urgent = None
+        while not companion_events.empty():
+            companion_events.get_nowait()
+
+
+def _session_lease(expected_epoch, register):
+    with control_transition_lock:
+        if expected_epoch != leases.control_epoch:
+            return {"ok": False, "reason": "control epoch changed; input preceded stop or cancellation",
+                    "control_epoch": leases.control_epoch}
+        lease = leases.issue()
+        lease["control_epoch"] = leases.control_epoch
+        if not register(lease):
+            return {"ok": False, "reason": "companion session cancelled or stopped",
+                    "control_epoch": leases.control_epoch}
+        return lease
+
+
+def _make_realtime_hub(**overrides):
+    # Resolve global devices/leases dynamically, including explicit test fakes.
+    return RealtimeHub(boot_id_fn=lambda: leases.boot_id,
+        epoch_fn=lambda: leases.control_epoch,
+        status_fn=lambda: _status_with_distance(),
+        dispatch_fn=lambda action, cmd, guard, status: _dispatch(action, cmd, guard, status),
+        lease_fn=_session_lease, stop_fn=lambda: stop(StopCommand()),
+        clear_events_fn=_clear_companion_events, **overrides)
+
+
+realtime_hub = _make_realtime_hub()
+
+
+@app.websocket(WS_PATH)
+async def companion_socket(websocket: WebSocket):
+    # This machine-to-machine endpoint has no browser consumer. Browsers send
+    # Origin; reject it before claiming control (closing an owner latches STOP).
+    if websocket.headers.get("origin") is not None:
+        await websocket.close(code=1008)
+        return
+    await realtime_hub.handle(websocket)
 
 
 def main() -> None:
     import uvicorn
 
     logger.info("Starting PiCrawler server on %s:%d (simulate=%s)", config.HOST, config.PORT, engine.simulate)
-    uvicorn.run(app, host=config.HOST, port=config.PORT)
+    uvicorn.run(app, host=config.HOST, port=config.PORT,
+                ws_max_size=MAX_MESSAGE_BYTES, ws_max_queue=4,
+                ws_per_message_deflate=False)
 
 
 if __name__ == "__main__":

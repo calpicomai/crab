@@ -30,7 +30,7 @@ Environment=PICRAWLER_PORT=8000
 # Hardware acceptance must explicitly approve changing these settings.
 Environment=PICRAWLER_HOME_ON_START=none
 Environment=PICRAWLER_ACTUATORS_ENABLED=0
-ExecStart=/home/pi/crab/robot/.venv/bin/uvicorn robot.server:app --host 0.0.0.0 --port 8000
+ExecStart=/home/pi/crab/robot/.venv/bin/python -m robot.server
 Restart=always
 RestartSec=3
 

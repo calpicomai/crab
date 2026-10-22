@@ -4,9 +4,8 @@ Mirrors the shared protocol exactly: it builds the same command models the
 server parses and returns the same CommandResponse the server produces. Because
 both sides import shared/protocol.py, the client and server cannot drift.
 
-Stage 1 uses HTTP (httpx). The public method surface here is what the future
-Ollama tool-calling agent will expose as tools — so a later WebSocket transport
-can be swapped in behind these methods without changing callers.
+Commands can share the local realtime session. HTTP remains available for
+diagnostics and independent STOP; an uncertain command never changes transport.
 """
 
 from __future__ import annotations
@@ -33,12 +32,15 @@ from . import config
 
 
 class RobotClient:
-    """Synchronous HTTP client for the robot command server."""
+    """Typed command client with an optional shared WebSocket transport."""
 
-    def __init__(self, base_url: str | None = None, timeout: float | None = None) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float | None = None, *, realtime=None) -> None:
         self.base_url = (base_url or config.BASE_URL).rstrip("/")
         require_local_url(self.base_url)
         self.timeout = timeout if timeout is not None else config.REQUEST_TIMEOUT_S
+        if realtime is not None and getattr(realtime, "base_url", self.base_url).rstrip("/") != self.base_url:
+            raise ValueError("HTTP stop and WebSocket commands must address the same robot base URL")
+        self.realtime = realtime  # shared lifetime belongs to the companion input service
         self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout,
                                     trust_env=False, follow_redirects=False)
 
@@ -57,7 +59,13 @@ class RobotClient:
     # ----------------------------------------------------------------- #
     # Internal helper
     # ----------------------------------------------------------------- #
-    def _post(self, action: Action, payload: dict) -> CommandResponse:
+    def _post(self, action: Action, payload: dict, *, expected_control_epoch=None) -> CommandResponse:
+        if self.realtime is not None and action not in (Action.GET_STATUS, Action.STOP):
+            # Never fall back to HTTP after an uncertain WebSocket dispatch.
+            metadata = {} if expected_control_epoch is None else {"expected_control_epoch": expected_control_epoch}
+            return self.realtime.command(action, payload, timeout=self.timeout, **metadata)
+        if expected_control_epoch is not None:
+            raise ValueError("control epoch provenance requires the realtime transport")
         if action not in (Action.GET_STATUS, Action.STOP):
             lease = self._client.post(CONTROL_LEASE_PATH)
             lease.raise_for_status()
@@ -104,10 +112,29 @@ class RobotClient:
         return self._post(Action.TURN_STEPS, cmd.model_dump())
 
     def stop(self) -> CommandResponse:
+        self.cancel_commands("HTTP stop invalidated pending commands")
         return self._post(Action.STOP, StopCommand().model_dump())
 
-    def resume(self) -> CommandResponse:
-        return self._post(Action.RESUME, ResumeCommand().model_dump())
+    def cancel_commands(self, reason="stop invalidated pending commands") -> None:
+        """Fence shared transport work before scheduling an independent STOP."""
+        if self.realtime is not None:
+            self.realtime.cancel_commands(reason)
+
+    def emergency_stop(self) -> CommandResponse:
+        """Independent, bounded stop usable after the ordinary client is closed."""
+        self.cancel_commands("emergency HTTP stop invalidated pending commands")
+        with httpx.Client(base_url=self.base_url, timeout=min(self.timeout, 1.0),
+                          trust_env=False, follow_redirects=False) as client:
+            response = client.post(ACTION_PATHS[Action.STOP], json=StopCommand().model_dump())
+            response.raise_for_status()
+            result = CommandResponse.model_validate(response.json())
+            if result.action != Action.STOP:
+                raise ValueError("emergency stop response action mismatch; state unknown")
+            return result
+
+    def resume(self, *, expected_control_epoch=None) -> CommandResponse:
+        return self._post(Action.RESUME, ResumeCommand().model_dump(),
+                          expected_control_epoch=expected_control_epoch)
 
     def stand(self) -> CommandResponse:
         return self._post(Action.STAND, StandCommand().model_dump())

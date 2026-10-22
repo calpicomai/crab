@@ -13,6 +13,12 @@ class CommandLeases:
         self._tokens: dict[str, float] = {}
         self._commands: set[str] = set()
         self._lock = threading.Lock()
+        self._control_epoch = 0
+
+    @property
+    def control_epoch(self) -> int:
+        with self._lock:
+            return self._control_epoch
 
     def issue(self) -> dict:
         with self._lock:
@@ -37,6 +43,8 @@ class CommandLeases:
             self._commands.add(command_id)
             return None
 
-    def invalidate(self) -> None:
+    def invalidate(self, *, advance_control_epoch: bool = False) -> None:
         with self._lock:
             self._tokens.clear()
+            if advance_control_epoch:
+                self._control_epoch += 1

@@ -5,3 +5,5 @@
 
 httpx>=0.27
 pydantic>=2.6
+# Persistent local Pi link; explicit proxy control requires websockets 15+.
+websockets>=15,<18
