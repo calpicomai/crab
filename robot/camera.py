@@ -5,9 +5,8 @@ run the detectors, so it just captures and streams; the Jetson brain pulls the
 stream and does detection. Capture uses picamera2 (the libcamera stack on
 Raspberry Pi OS Bookworm).
 
-Mirrors the GaitEngine simulate philosophy: if picamera2 isn't importable (dev
-laptop, CI), the camera generates deterministic synthetic JPEG frames instead,
-so the whole Pi->Jetson video link runs off-hardware.
+Synthetic frames require explicit simulation. Missing libraries, hardware
+failures and stalled capture stay unavailable and never manufacture observations.
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ import io
 import logging
 import threading
 import time
+
+from shared.health import InputHealth, unavailable
 
 logger = logging.getLogger("picrawler.camera")
 
@@ -29,7 +30,7 @@ try:  # pragma: no cover - depends on deploy target
 except Exception as exc:  # noqa: BLE001 - any failure means "no camera hardware"
     Picamera2 = None  # type: ignore[assignment,misc]
     _PICAMERA2_AVAILABLE = False
-    logger.info("picamera2 unavailable (%s); camera will produce synthetic frames", exc)
+    logger.info("picamera2 unavailable (%s); camera unavailable without explicit simulation", exc)
 
 
 class _FrameBuffer(io.BufferedIOBase):
@@ -40,6 +41,7 @@ class _FrameBuffer(io.BufferedIOBase):
     def __init__(self) -> None:
         super().__init__()
         self.frame: bytes | None = None
+        self.captured_at: float | None = None
         self._cond = threading.Condition()
 
     def writable(self) -> bool:
@@ -48,6 +50,7 @@ class _FrameBuffer(io.BufferedIOBase):
     def write(self, buf) -> int:
         with self._cond:
             self.frame = bytes(buf)
+            self.captured_at = time.time()
             self._cond.notify_all()
         return len(buf)
 
@@ -73,7 +76,8 @@ class PiCamera:
         self.height = height
         self.fps = max(1, fps)
         self.quality = quality
-        self.simulate = bool(simulate) or not _PICAMERA2_AVAILABLE
+        self.simulate = bool(simulate)
+        self._failure: str | None = "not started"
         self._buffer = _FrameBuffer()
         self._picam2 = None
         self._stop = threading.Event()
@@ -86,10 +90,15 @@ class PiCamera:
     # Lifecycle
     # ----------------------------------------------------------------- #
     def start(self) -> None:
+        self._stop.clear()
         if self.simulate:
+            self._failure = None
             logger.warning("PiCamera in SIMULATE mode — serving synthetic frames")
             self._thread = threading.Thread(target=self._run_synthetic, daemon=True)
             self._thread.start()
+            return
+        if not _PICAMERA2_AVAILABLE:
+            self._failure = "picamera2 unavailable"
             return
         try:  # pragma: no cover - requires hardware
             self._picam2 = Picamera2()
@@ -102,21 +111,29 @@ class PiCamera:
             except TypeError:
                 encoder = JpegEncoder()
             self._picam2.start_recording(encoder, FileOutput(self._buffer))
+            self._failure = None
             logger.info("PiCamera started (%dx%d@%d)", self.width, self.height, self.fps)
-        except Exception as exc:  # noqa: BLE001 - fall back to synthetic
-            logger.warning("PiCamera hardware start failed (%s); using synthetic frames", exc)
-            self.simulate = True
-            self._thread = threading.Thread(target=self._run_synthetic, daemon=True)
-            self._thread.start()
+        except Exception as exc:  # noqa: BLE001
+            self._failure = f"camera start failed: {exc}"[:300]
+            logger.warning("%s", self._failure)
+            if self._picam2 is not None:
+                try:
+                    self._picam2.close()
+                except Exception:
+                    pass
+                self._picam2 = None
 
     def stop(self) -> None:
         self._stop.set()
+        self._failure = "camera stopped"
         if self._picam2 is not None:  # pragma: no cover - hardware
             try:
                 self._picam2.stop_recording()
             except Exception:  # noqa: BLE001
                 pass
             self._picam2 = None
+        if self._thread is not None:
+            self._thread.join(timeout=1)
 
     # ----------------------------------------------------------------- #
     # Synthetic generator (off-hardware)
@@ -149,8 +166,16 @@ class PiCamera:
     # Frame access
     # ----------------------------------------------------------------- #
     def get_frame(self, timeout: float = 1.0) -> bytes | None:
-        """Latest JPEG bytes (or None if no frame yet)."""
-        return self._buffer.latest(timeout)
+        """Latest fresh JPEG bytes, or None on missing/stale/failed capture."""
+        frame = self._buffer.latest(timeout)
+        return frame if self.health().fresh() else None
+
+    def health(self) -> InputHealth:
+        stamp = self._buffer.captured_at
+        return InputHealth(available=stamp is not None and self._failure is None,
+                           provenance="simulated" if self.simulate else "real",
+                           captured_at=stamp, received_at=stamp, source="pi.camera",
+                           max_age_s=2, failure_reason=self._failure)
 
     def mjpeg_frames(self):
         """Yield multipart/x-mixed-replace chunks for a streaming HTTP response."""
@@ -161,5 +186,7 @@ class PiCamera:
             if frame is None:
                 time.sleep(0.05)
                 continue
-            yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            metadata = (f"X-Crab-Captured-At: {self._buffer.captured_at}\r\n"
+                        f"X-Crab-Provenance: {'simulated' if self.simulate else 'real'}\r\n").encode()
+            yield boundary + b"Content-Type: image/jpeg\r\n" + metadata + b"\r\n" + frame + b"\r\n"
             time.sleep(period)

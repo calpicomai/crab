@@ -41,12 +41,11 @@ def _split(value: str) -> list[str]:
 DETECTOR_BACKENDS: list[str] = _split(os.environ.get("PERCEPTION_BACKENDS", "yolo"))
 
 # YOLO. Default to the copy setup_perception.sh pre-fetches into the repo's data/
-# dir if it's there (so no env is needed); else the bare name, which ultralytics
-# downloads on first use.
+# dir. Missing weights are an unavailable capability, never a runtime download.
 def _default_yolo_weights() -> str:
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     cached = os.path.join(repo_root, "data", "yolov8n.pt")
-    return cached if os.path.exists(cached) else "yolov8n.pt"
+    return cached
 
 
 YOLO_WEIGHTS: str = os.environ.get("PERCEPTION_YOLO_WEIGHTS", _default_yolo_weights())

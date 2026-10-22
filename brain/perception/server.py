@@ -47,9 +47,11 @@ class BackendBody(BaseModel):
 def health() -> dict[str, object]:
     return {
         "ok": True,
-        "simulate": engine.simulate or engine.camera.simulate,
+        "simulate": engine.simulate or engine.camera.health().provenance == "simulated",
         "backends": engine.loaded_backends(),
         "camera_url": config.CAMERA_URL,
+        "camera": engine.camera.health().snapshot(),
+        "detector_failures": dict(engine._backend_failures),
     }
 
 
@@ -67,7 +69,8 @@ def set_prompts(body: PromptsBody) -> dict[str, object]:
 @app.post("/load")
 def load(body: BackendBody) -> dict[str, object]:
     engine.load(body.backend)
-    return {"ok": True, "backends": engine.loaded_backends()}
+    return {"ok": body.backend.strip().lower() in engine.loaded_backends(),
+            "backends": engine.loaded_backends(), "failures": dict(engine._backend_failures)}
 
 
 @app.post("/unload")

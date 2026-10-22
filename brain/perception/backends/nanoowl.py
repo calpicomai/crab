@@ -12,6 +12,9 @@ Everything is imported lazily inside load().
 from __future__ import annotations
 
 import logging
+import json
+import os
+from pathlib import Path
 
 import numpy as np
 
@@ -20,6 +23,38 @@ from ..types import Detection
 from .base import DetectorBackend
 
 logger = logging.getLogger("perception.nanoowl")
+
+_SUPPORTED_MODELS = {"google/owlvit-base-patch32", "google/owlvit-base-patch16",
+                     "google/owlvit-large-patch14"}
+
+
+def _cached_model(model: str) -> Path:
+    """Resolve a complete existing HF snapshot without querying the network."""
+    if model not in _SUPPORTED_MODELS:
+        raise ValueError("NanoOWL requires a supported OWL-ViT model ID with an existing local HF cache")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    from huggingface_hub import snapshot_download, constants
+
+    if not constants.HF_HUB_OFFLINE:
+        raise RuntimeError("Hugging Face was imported online; restart with HF_HUB_OFFLINE=1")
+    path = Path(snapshot_download(repo_id=model, local_files_only=True))
+    required = ["config.json", "preprocessor_config.json", "tokenizer_config.json", "vocab.json", "merges.txt"]
+    for filename in required:
+        file = path / filename
+        if not file.is_file() or file.stat().st_size == 0:
+            raise FileNotFoundError(f"NanoOWL cache incomplete: {filename}; provision model before runtime")
+    weight_files = [path / name for name in ("model.safetensors", "pytorch_model.bin")]
+    if not any(file.is_file() and file.stat().st_size for file in weight_files):
+        indices = [path / name for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json")]
+        index = next((file for file in indices if file.is_file()), None)
+        if index is None:
+            raise FileNotFoundError("NanoOWL cache has no model weights")
+        shards = list(json.loads(index.read_text())["weight_map"].values())
+        if not shards or not all((path / shard).is_file() and (path / shard).stat().st_size for shard in shards):
+            raise FileNotFoundError("NanoOWL cache has missing weight shards")
+    return path
 
 
 def _to_list(value) -> list:
@@ -53,10 +88,18 @@ class NanoOwlBackend(DetectorBackend):
         self._text_encodings = None
 
     def load(self) -> None:
+        engine = Path(self.engine).expanduser()
+        if not engine.is_file() or engine.stat().st_size == 0:
+            raise FileNotFoundError("NanoOWL requires a local prebuilt TensorRT engine; provision before runtime")
+        cached = _cached_model(self.model)
+        from transformers.utils import is_offline_mode
+
+        if not is_offline_mode():
+            raise RuntimeError("Transformers was imported online; restart with TRANSFORMERS_OFFLINE=1")
         from nanoowl.owl_predictor import OwlPredictor  # heavy: torch2trt + TensorRT
 
-        logger.info("Loading NanoOWL (%s, engine=%s)", self.model, self.engine)
-        self._predictor = OwlPredictor(self.model, image_encoder_engine=self.engine)
+        logger.info("Loading cached NanoOWL (%s, cache=%s, engine=%s)", self.model, cached, engine)
+        self._predictor = OwlPredictor(self.model, image_encoder_engine=str(engine.resolve()))
         self._encode_prompts()
         self._loaded = True
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from shared.health import InputHealth
+
 
 class Detection(BaseModel):
     """One detected object."""
@@ -37,3 +39,6 @@ class PerceptionSnapshot(BaseModel):
     latency_ms: float = 0.0
     # Open-vocabulary prompts active for this snapshot (NanoOWL), if any.
     prompts: list[str] | None = None
+    # Capture and interpretation stay separate; receiving or re-detecting an old
+    # image never makes its evidence fresh.
+    inputs: dict[str, InputHealth] = Field(default_factory=dict)

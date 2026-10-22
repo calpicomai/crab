@@ -12,9 +12,12 @@ can be swapped in behind these methods without changing callers.
 from __future__ import annotations
 
 import httpx
+import uuid
+from shared.local import require_local_url
 
 from shared import (
     ACTION_PATHS,
+    CONTROL_LEASE_PATH, StopCommand, ResumeCommand, TurnStepsCommand,
     HEALTH_PATH,
     Action,
     CommandResponse,
@@ -34,8 +37,10 @@ class RobotClient:
 
     def __init__(self, base_url: str | None = None, timeout: float | None = None) -> None:
         self.base_url = (base_url or config.BASE_URL).rstrip("/")
+        require_local_url(self.base_url)
         self.timeout = timeout if timeout is not None else config.REQUEST_TIMEOUT_S
-        self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
+        self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout,
+                                    trust_env=False, follow_redirects=False)
 
     # ----------------------------------------------------------------- #
     # Context-manager support so callers can `with RobotClient() as r:`
@@ -53,9 +58,21 @@ class RobotClient:
     # Internal helper
     # ----------------------------------------------------------------- #
     def _post(self, action: Action, payload: dict) -> CommandResponse:
+        if action not in (Action.GET_STATUS, Action.STOP):
+            lease = self._client.post(CONTROL_LEASE_PATH)
+            lease.raise_for_status()
+            lease_data = lease.json()
+            if not lease_data.get("ok"):
+                raise RuntimeError(lease_data.get("reason", "command lease unavailable"))
+            payload = {**payload, "lease_id": lease_data["lease_id"], "command_id": uuid.uuid4().hex}
         resp = self._client.post(ACTION_PATHS[action], json=payload)
         resp.raise_for_status()
-        return CommandResponse.model_validate(resp.json())
+        result = CommandResponse.model_validate(resp.json())
+        if result.action != action:
+            raise ValueError("robot response action does not match command; outcome unknown")
+        if payload.get("command_id") and result.command_id != payload["command_id"]:
+            raise ValueError("robot response command ID does not match; outcome unknown")
+        return result
 
     # ----------------------------------------------------------------- #
     # Abilities (one per shared.Action)
@@ -81,6 +98,16 @@ class RobotClient:
     def turn(self, degrees: float, speed: int | None = None) -> CommandResponse:
         cmd = TurnCommand(degrees=degrees, **({} if speed is None else {"speed": speed}))
         return self._post(Action.TURN, cmd.model_dump())
+
+    def turn_steps(self, direction: str, cycles: int = 1, speed: int | None = None) -> CommandResponse:
+        cmd = TurnStepsCommand(direction=direction, cycles=cycles, **({} if speed is None else {"speed": speed}))
+        return self._post(Action.TURN_STEPS, cmd.model_dump())
+
+    def stop(self) -> CommandResponse:
+        return self._post(Action.STOP, StopCommand().model_dump())
+
+    def resume(self) -> CommandResponse:
+        return self._post(Action.RESUME, ResumeCommand().model_dump())
 
     def stand(self) -> CommandResponse:
         return self._post(Action.STAND, StandCommand().model_dump())

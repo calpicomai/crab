@@ -7,6 +7,8 @@ never pulls in torch/ultralytics on machines that don't have them.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 import numpy as np
 
@@ -27,10 +29,23 @@ class YoloBackend(DetectorBackend):
         self._model = None
 
     def load(self) -> None:
+        weights = Path(self.weights).expanduser()
+        if not weights.is_file() or weights.stat().st_size == 0 or weights.suffix not in {".pt", ".engine"}:
+            raise FileNotFoundError("YOLO requires nonempty local .pt weights or a .engine file; provision before runtime")
+        # Set before importing Ultralytics: its module import otherwise probes
+        # Internet connectivity, and missing checkpoint modules can auto-install.
+        os.environ["YOLO_OFFLINE"] = "true"
+        os.environ["YOLO_AUTOINSTALL"] = "false"
         from ultralytics import YOLO  # heavy: torch + ultralytics
+        from ultralytics import utils
 
-        logger.info("Loading YOLO weights %s", self.weights)
-        self._model = YOLO(self.weights)
+        if utils.ONLINE or utils.AUTOINSTALL:
+            raise RuntimeError("Ultralytics was imported with network/auto-install enabled; restart in offline mode")
+        # In-memory setting only: do not rewrite the user's Ultralytics config.
+        dict.__setitem__(utils.SETTINGS, "sync", False)
+
+        logger.info("Loading local YOLO weights %s", weights)
+        self._model = YOLO(str(weights.resolve()), task="detect")
         self._loaded = True
 
     def unload(self) -> None:

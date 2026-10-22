@@ -1,48 +1,31 @@
-"""Gait engine — the stable seam between the network protocol and the legs.
+"""Pi-owned bounded primitives with explicit simulation and fail-closed limits.
 
-``walk``/``turn`` are still backed by SunFounder picrawler's built-in
-``do_action``. ``stand``/``sit`` are **staged**: they move one leg at a time to
-picrawler's stand/sit coordinates via ``do_single_leg``, at a reduced
-``STAND_SPEED`` with a short settle delay between legs. This is a power-safety
-measure — driving all 12 servos at once (as ``do_action("stand")`` does) causes a
-current spike that can brown out and reset the Pi on the shared Robot HAT rail,
-especially if a mis-calibrated leg stalls. Staging keeps only ~3 servos loaded at
-a time. picrawler applies the offsets you set with the SunFounder calibration
-tool, so there is intentionally NO calibration code here (see CLAUDE.md).
-
-The important property is the SEAM: the public method signatures
-(``stand``/``sit``/``walk``/``turn``/``test_leg``/``get_status``) are fixed. The
-real custom, coordinate-based gait later replaces the bodies (canned
-``do_action`` -> ``crawler.do_step(coords, speed)``) WITHOUT touching the HTTP
-protocol, the Jetson client, or these signatures. The staged per-leg stand/sit is
-the first step in that direction.
-
-If picrawler / robot_hat are not importable (e.g. a dev laptop or this CI box),
-the engine drops into ``simulate`` mode: it logs the intended action and returns
-success, so the whole robot<->brain link is runnable off-hardware.
+SunFounder owns all servo timing and saved calibration. A completed vendor call
+is an executed open-loop command, never proof of a measured body displacement.
+Stop is latched and observed between vendor cycles / staged leg changes; it
+cannot interrupt a blocking vendor call or replace a physical power cutoff.
 """
-
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 import logging
+import math
+import threading
 import time
 from typing import Callable
 
 from shared import DEFAULT_SPEED, LEG_COUNT, Pose, RobotStatus
-
 from . import config
 
 logger = logging.getLogger("picrawler.gait")
-
-# Guarded hardware import. Missing on non-Pi machines -> simulate mode.
-try:  # pragma: no cover - depends on deploy target
+try:  # import only; constructing Picrawler resets the MCU
     from picrawler import Picrawler
-
     _PICRAWLER_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001 - any import failure means "no hardware"
-    Picrawler = None  # type: ignore[assignment,misc]
+    _IMPORT_ERROR = ""
+except Exception as exc:  # hardware is optional, not implicitly simulated
+    Picrawler = None
     _PICRAWLER_AVAILABLE = False
-    logger.info("picrawler unavailable (%s); GaitEngine will run in simulate mode", exc)
+    _IMPORT_ERROR = str(exc)[:240]
 
 SERVO_COUNT = 12  # 4 legs x 3 joints
 
@@ -68,208 +51,298 @@ FORWARD_FRAMES: list[list[list[int]]] = [
 ]
 
 
+@dataclass
+class MotionResult:
+    ok: bool
+    action: str
+    requested_cycles: int = 0
+    completed_cycles: int = 0
+    applied_speed: int = 0
+    reason: str = ""
+    cancelled: bool = False
+    estimated_turn_degrees: float | None = None
+    estimate_provenance: str = "unmeasured"
+    sequence: int = 0
+    movement_uncertain: bool = False
+    initialization_executed: bool = False
+
+
 class GaitEngine:
-    """High-level robot abilities. Real-time timing lives entirely here."""
+    """Only this component executes motion; all entry points share its limits."""
 
     def __init__(self, simulate: bool = False) -> None:
-        # Simulate if explicitly forced OR if the hardware libs are missing.
-        self.simulate: bool = bool(simulate) or not _PICRAWLER_AVAILABLE
-        self._pose: Pose = Pose.UNKNOWN
-        self._is_moving: bool = False
-        self._started_at: float = time.monotonic()
-        # Optional forward-clearance reader (cm), injected by the server from the
-        # ultrasonic sensor. When set, walk() checks it between gait cycles and
-        # aborts early if clearance drops below the reflex distance — a fast
-        # on-robot safety stop so a blocking stride can't blindly ram an obstacle.
+        self.simulate = bool(simulate)
+        self.enabled = self.simulate or (config.ACTUATORS_ENABLED and _PICRAWLER_AVAILABLE)
+        self.unavailable_reason = ""
+        if not self.simulate:
+            if not config.ACTUATORS_ENABLED:
+                self.unavailable_reason = "actuators disabled; hardware acceptance requires explicit enablement"
+            elif not _PICRAWLER_AVAILABLE:
+                self.unavailable_reason = "picrawler unavailable: " + _IMPORT_ERROR
+        self._pose = Pose.UNKNOWN
+        self._is_moving = False
+        self._started_at = time.monotonic()
+        self._motion_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._sequence = 0
+        self._reflex_stopped = False
         self.clearance_fn: Callable[[], float | None] | None = None
-        self._reflex_stopped: bool = False
-        # Optional 2D sim world (robot/simworld.py). When set (simulate + SIM_WORLD),
-        # walk/turn move the virtual robot so the whole stack runs off-hardware.
+        self.battery_fn: Callable[[], float | None] | None = None
         self.world = None
+        self.last_result: MotionResult | None = None
+        self._crawler = None
+        self._initialization_executed = False
+        # Picrawler construction moves servo positions. Delay it until an
+        # explicitly enabled motion passes fresh power AND clearance checks.
+        logger.info("Motion simulate=%s enabled=%s reason=%s", self.simulate, self.enabled, self.unavailable_reason)
 
-        if self.simulate:
-            self._crawler = None
-            logger.warning("GaitEngine running in SIMULATE mode — no servos will move")
-        else:  # pragma: no cover - requires hardware
-            # Default pin map; picrawler reads the calibration you already saved.
+    def _result(self, action: str, requested: int = 0, reason: str = "") -> MotionResult:
+        return MotionResult(False, action, requested_cycles=requested, reason=reason,
+                            sequence=self._sequence,
+                            estimate_provenance="idealized_simulation" if self.simulate else "unmeasured")
+
+    def _finish(self, result: MotionResult) -> MotionResult:
+        result.sequence = self._sequence
+        self.last_result = result
+        return result
+
+    @staticmethod
+    def _valid_speed(speed: int) -> bool:
+        return isinstance(speed, int) and not isinstance(speed, bool) and 1 <= speed <= 100
+
+    @staticmethod
+    def _read(reader: Callable[[], float | None] | None) -> float | None:
+        if reader is None:
+            return None
+        try:
+            value = reader()
+            if isinstance(value, bool) or value is None or not math.isfinite(value) or value <= 0:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _guard(self, result: MotionResult, speed: int, *, forward: bool = False,
+               min_clearance_cm: float | None = None) -> bool:
+        if self._stop_event.is_set():
+            result.cancelled = True
+            result.reason = "stop latched"
+            return False
+        if not self.enabled:
+            result.reason = self.unavailable_reason
+            return False
+        voltage = self._read(self.battery_fn)
+        if voltage is None:
+            result.reason = "battery unavailable; motion inhibited"
+            return False
+        if voltage < config.BATTERY_CRITICAL_V:
+            result.reason = "critical battery; motion inhibited"
+            return False
+        cap = config.BATTERY_LOW_SPEED if voltage < config.BATTERY_LOW_V else config.MAX_MOTION_SPEED
+        result.applied_speed = min(speed, cap, config.MAX_MOTION_SPEED)
+        if forward:
+            # A caller cannot disable or lower the Pi's minimum safety margin.
+            threshold = max(config.REFLEX_STOP_CM, min_clearance_cm or 0.0)
+            distance = self._read(self.clearance_fn)
+            if distance is None or distance < threshold:
+                self._reflex_stopped = True
+                result.reason = "clearance unavailable" if distance is None else "forward clearance blocked"
+                return False
+        return True
+
+    def _execute(self, action: str, requested: int, speed: int, operation,
+                 *, initialization_clearance_cm: float | None = None) -> MotionResult:
+        result = self._result(action, requested)
+        if not self._valid_speed(speed):
+            result.reason = "speed must be an integer in 1..100"
+            return self._finish(result)
+        # Never queue commands: an old command waiting behind a gesture must not
+        # start after a newer stop / resume. The coordinator may submit a fresh one.
+        if not self._motion_lock.acquire(blocking=False):
+            result.reason = "motion busy; command not queued"
+            return self._finish(result)
+        try:
+            self._reflex_stopped = False
+            if not self._guard(result, speed):
+                return self._finish(result)
+            if not self._initialize_driver(result, speed, initialization_clearance_cm):
+                return self._finish(result)
+            self._is_moving = True
+            operation(result)
+            result.ok = result.completed_cycles == requested and not result.reason
+            if self._stop_event.is_set():
+                result.ok = False
+                result.cancelled = True
+                result.reason = "stop latched; last vendor boundary reached"
+            return self._finish(result)
+        except Exception as exc:
+            # A vendor error may follow partial physical motion. Invalidate every
+            # open-loop estimate; a failed command is never a no-movement claim.
+            self._sequence += 1
+            self._pose = Pose.UNKNOWN
+            self._stop_event.set()
+            result.ok = False
+            result.movement_uncertain = True
+            result.reason = self.unavailable_reason or "vendor motion failed: " + str(exc)[:240]
+            return self._finish(result)
+        finally:
+            self._is_moving = False
+            self._motion_lock.release()
+
+    def _initialize_driver(self, result: MotionResult, speed: int,
+                           min_clearance_cm: float | None = None) -> bool:
+        if self.simulate or self._crawler is not None:
+            return True
+        # Initialization can change all twelve servo targets, even for a turn or
+        # posture command. Unknown/blocked forward space inhibits this boundary.
+        if not self._guard(result, speed, forward=True, min_clearance_cm=min_clearance_cm):
+            return False
+        self._is_moving = True
+        result.initialization_executed = True
+        self._initialization_executed = True
+        try:
+            # Vendor reads ~/.config/.picrawler.config; never duplicate offsets.
             self._crawler = Picrawler()
-            logger.info("GaitEngine initialised with picrawler hardware")
+        except Exception as exc:
+            # Do not automatically retry a partially completed initialization
+            # after resume; restart/recovery requires hardware inspection.
+            self.enabled = False
+            self.unavailable_reason = "driver initialization failed: " + str(exc)[:240]
+            raise
+        self._sequence += 1
+        self._pose = Pose.UNKNOWN
+        # Stop cannot preempt the vendor constructor. Honor it immediately on
+        # return, and recheck battery/clearance before the requested primitive.
+        return self._guard(result, speed, forward=True, min_clearance_cm=min_clearance_cm)
 
-    # ----------------------------------------------------------------- #
-    # Internal helpers
-    # ----------------------------------------------------------------- #
-    def _do_action(self, action: str, step: int, speed: int) -> None:
-        """Run a canned picrawler action, or log it in simulate mode.
-
-        Used by walk/turn. # TODO: real custom gait — replace with a
-        coordinate-based gait via crawler.do_step(coords, speed).
-        """
-        if self.simulate or self._crawler is None:
-            logger.info("[simulate] do_action(%r, step=%d, speed=%d)", action, step, speed)
-            return
-        self._crawler.do_action(action, step, speed)  # pragma: no cover - hardware
+    def _do_action(self, action: str, speed: int) -> None:
+        if self.simulate:
+            logger.debug("[simulate] %s, one vendor cycle, speed=%s", action, speed)
+        else:
+            self._crawler.do_action(action, 1, speed)
+        self._sequence += 1
 
     def _do_single_leg(self, leg: int, coord: list[int], speed: int) -> None:
-        """Move ONE leg to a coordinate, or log it in simulate mode.
+        if not self.simulate:
+            self._crawler.do_single_leg(leg, coord, speed)
+        self._sequence += 1
 
-        This is the power-safe primitive behind the staged stand/sit and the
-        per-leg diagnostic: only one leg (3 servos) is driven at a time.
-        """
-        if self.simulate or self._crawler is None:
-            logger.info("[simulate] do_single_leg(leg=%d, coord=%s, speed=%d)", leg, coord, speed)
-            return
-        self._crawler.do_single_leg(leg, coord, speed)  # pragma: no cover - hardware
+    def _pose_motion(self, action: str, coords: list[list[int]], pose: Pose) -> MotionResult:
+        def operation(result):
+            self._pose = Pose.UNKNOWN
+            for leg in range(LEG_COUNT):
+                if not self._guard(result, config.STAND_SPEED):
+                    return
+                self._do_single_leg(leg, coords[leg], result.applied_speed)
+                if leg < LEG_COUNT - 1 and self._stop_event.wait(config.LEG_SETTLE_S):
+                    result.cancelled = True
+                    result.reason = "stop latched between leg stages"
+                    return
+            self._pose = pose
+            result.completed_cycles = 1
+        return self._execute(action, 1, config.STAND_SPEED, operation)
 
-    def _move_pose_staged(self, coords: list[list[int]]) -> None:
-        """Move to a full-body pose one leg at a time, gently.
+    def stand(self) -> MotionResult:
+        return self._pose_motion("stand", STAND_COORD, Pose.STANDING)
 
-        Drives each leg in turn at config.STAND_SPEED with config.LEG_SETTLE_S
-        between legs, so only ~3 servos draw current simultaneously.
-        """
-        for leg in range(LEG_COUNT):
-            self._do_single_leg(leg, coords[leg], config.STAND_SPEED)
-            if leg < LEG_COUNT - 1:
-                time.sleep(config.LEG_SETTLE_S)
-
-    def _do_step(self, coords: list[list[int]], speed: int) -> None:
-        """Move all four legs to a coordinate frame at once, or log it (simulate).
-
-        This is the primitive of the custom coordinate gait. Out-of-range coords
-        are clamped by picrawler (israise defaults False).
-        """
-        if self.simulate or self._crawler is None:
-            logger.info("[simulate] do_step(%s, speed=%d)", coords, speed)
-            return
-        self._crawler.do_step(coords, speed)  # pragma: no cover - hardware
+    def sit(self) -> MotionResult:
+        return self._pose_motion("sit", SIT_COORD, Pose.SITTING)
 
     @staticmethod
     def _scaled_frame(frame: list[list[int]], scale: float) -> list[list[int]]:
-        """Amplify a frame's stride: scale each leg's x/y offset from the stand
-        neutral by `scale` (z, the lift/plant, is left as-is). scale=1.0 reproduces
-        picrawler's exact frame (proven to walk); >1.0 lengthens the step."""
-        out = []
-        for i in range(LEG_COUNT):
-            nx, ny, _nz = STAND_COORD[i]
-            x, y, z = frame[i]
-            out.append([round(nx + (x - nx) * scale), round(ny + (y - ny) * scale), z])
-        return out
+        # Retained for offline gait tooling; never amplify beyond stock reach.
+        scale = max(0.5, min(1.0, scale))
+        return [[round(STAND_COORD[i][0] + (x - STAND_COORD[i][0]) * scale),
+                 round(STAND_COORD[i][1] + (y - STAND_COORD[i][1]) * scale), z]
+                for i, (x, y, z) in enumerate(frame)]
 
-    def _reflex_blocks(self, min_clearance_cm: float | None) -> bool:
-        """True if the forward reflex should abort the walk now: the injected
-        clearance reader sees less than the reflex distance. Inert when disabled
-        or no clearance reader is wired (e.g. ultrasonic off / simulate laptop)."""
-        if not config.REFLEX_ENABLED or self.clearance_fn is None:
-            return False
-        threshold = config.REFLEX_STOP_CM if min_clearance_cm is None else min_clearance_cm
-        if threshold <= 0:
-            return False
-        distance = self.clearance_fn()
-        return distance is not None and distance < threshold
-
-    def _custom_walk(self, steps: int, speed: int, min_clearance_cm: float | None) -> None:
-        """Custom coordinate gait: play picrawler's forward keyframes via do_step,
-        with a tunable stride scale. Enters from a stand so the first frame doesn't jerk.
-        Checks the reflex between frames so it can stop mid-stride."""
-        if self._pose != Pose.STANDING:
-            self.stand()  # staged, safe entry
-        scale = config.GAIT_STRIDE_SCALE
-        frames = [self._scaled_frame(f, scale) for f in FORWARD_FRAMES]
-        for _ in range(max(0, steps)):
-            for coords in frames:
-                if self._reflex_blocks(min_clearance_cm):
-                    self._reflex_stopped = True
+    def walk(self, steps: int, speed: int = DEFAULT_SPEED, mode: str | None = None,
+             min_clearance_cm: float | None = None) -> MotionResult:
+        if isinstance(steps, bool) or not isinstance(steps, int) or not 0 <= steps <= config.MAX_MOTION_CYCLES:
+            return self._finish(self._result("walk", reason=f"cycles must be 0..{config.MAX_MOTION_CYCLES}"))
+        if min_clearance_cm is not None and (not math.isfinite(min_clearance_cm) or min_clearance_cm < 0):
+            return self._finish(self._result("walk", steps, "invalid clearance margin"))
+        mode = mode or config.GAIT_MODE
+        if mode != "canned":
+            return self._finish(self._result("walk", steps, "custom gait is not an accepted motion primitive"))
+        if steps == 0:
+            return self._finish(MotionResult(True, "walk", sequence=self._sequence))
+        def operation(result):
+            for _ in range(steps):
+                if not self._guard(result, speed, forward=True, min_clearance_cm=min_clearance_cm):
                     return
-                self._do_step(coords, speed)
-            if self.world is not None:
-                self.world.advance(config.SIM_STRIDE_CM)
+                self._do_action("forward", result.applied_speed)
+                result.completed_cycles += 1
+                self._pose = Pose.STANDING
+                if self.simulate and self.world is not None:
+                    self.world.advance(config.SIM_STRIDE_CM)
+        return self._execute("walk", steps, speed, operation, initialization_clearance_cm=min_clearance_cm)
 
-    # ----------------------------------------------------------------- #
-    # Public abilities (mirror shared.Action). Signatures are the seam.
-    # ----------------------------------------------------------------- #
-    def stand(self) -> None:
-        self._is_moving = True
-        try:
-            self._move_pose_staged(STAND_COORD)
-            self._pose = Pose.STANDING
-        finally:
-            self._is_moving = False
-
-    def sit(self) -> None:
-        self._is_moving = True
-        try:
-            self._move_pose_staged(SIT_COORD)
-            self._pose = Pose.SITTING
-        finally:
-            self._is_moving = False
-
-    def walk(
-        self,
-        steps: int,
-        speed: int = DEFAULT_SPEED,
-        mode: str | None = None,
-        min_clearance_cm: float | None = None,
-    ) -> None:
-        # mode: "canned" (picrawler do_action) or "custom" (coordinate do_step gait).
-        # Defaults to config.GAIT_MODE; the tuning tool passes mode="custom" explicitly.
-        # Network protocol is unchanged — WalkCommand carries no mode.
-        # The reflex checks forward clearance between gait cycles and aborts early
-        # (sets reflex_stopped) so a blocking stride can't blindly ram an obstacle.
-        mode = (mode or config.GAIT_MODE).lower()
-        self._is_moving = True
-        self._reflex_stopped = False
-        try:
-            if mode == "custom":
-                self._custom_walk(steps, speed, min_clearance_cm)
-            else:
-                for _ in range(max(0, steps)):
-                    if self._reflex_blocks(min_clearance_cm):
-                        self._reflex_stopped = True
-                        break
-                    self._do_action("forward", 1, speed)
+    def turn_steps(self, direction: str, cycles: int = 1, speed: int = DEFAULT_SPEED) -> MotionResult:
+        if direction not in {"left", "right"}:
+            return self._finish(self._result("turn_steps", reason="direction must be left or right"))
+        if isinstance(cycles, bool) or not isinstance(cycles, int) or not 1 <= cycles <= config.MAX_MOTION_CYCLES:
+            return self._finish(self._result("turn_steps", reason=f"cycles must be 1..{config.MAX_MOTION_CYCLES}"))
+        def operation(result):
+            for _ in range(cycles):
+                if not self._guard(result, speed):
+                    return
+                self._do_action("turn " + direction, result.applied_speed)
+                result.completed_cycles += 1
+                self._pose = Pose.STANDING
+                if self.simulate:
+                    estimate = config.SIM_TURN_CYCLE_DEG * (1 if direction == "right" else -1)
+                    result.estimated_turn_degrees = (result.estimated_turn_degrees or 0) + estimate
                     if self.world is not None:
-                        self.world.advance(config.SIM_STRIDE_CM)
-            self._pose = Pose.STANDING
+                        self.world.rotate(estimate)
+        return self._execute("turn_steps", cycles, speed, operation)
+
+    def turn(self, degrees: float, speed: int = DEFAULT_SPEED) -> MotionResult:
+        """Legacy API: precise turns were never supported and are now rejected."""
+        if degrees == 0:
+            return self._finish(MotionResult(True, "turn", sequence=self._sequence))
+        return self._finish(self._result("turn", reason="precise angle unsupported; use bounded turn_steps(left/right)"))
+
+    def test_leg(self, leg: int, speed: int = DEFAULT_SPEED) -> MotionResult:
+        if isinstance(leg, bool) or not isinstance(leg, int) or not 0 <= leg < LEG_COUNT:
+            return self._finish(self._result("test_leg", reason="leg must be an integer in 0..3"))
+        def operation(result):
+            self._do_single_leg(leg, STAND_COORD[leg], result.applied_speed)
+            self._pose = Pose.UNKNOWN  # one leg does not establish a whole-body pose
+            result.completed_cycles = 1
+        return self._execute("test_leg", 1, speed, operation)
+
+    def stop(self) -> MotionResult:
+        self._stop_event.set()  # deliberately does not wait for the motion lock
+        return self._finish(MotionResult(True, "stop", reason="stop latched; active vendor call finishes at its boundary",
+                                         sequence=self._sequence))
+
+    def resume(self) -> MotionResult:
+        if not self._motion_lock.acquire(blocking=False):
+            return self._finish(self._result("resume", reason="motion still stopping"))
+        try:
+            self._stop_event.clear()
+            return self._finish(MotionResult(True, "resume", reason="stop latch cleared; fresh commands still require health checks",
+                                             sequence=self._sequence))
         finally:
-            self._is_moving = False
+            self._motion_lock.release()
 
     @property
     def reflex_stopped(self) -> bool:
-        """Whether the most recent walk aborted early on the forward reflex."""
         return self._reflex_stopped
 
-    def turn(self, degrees: float, speed: int = DEFAULT_SPEED) -> None:
-        # Positive degrees = turn right (clockwise), negative = left.
-        # TODO: real custom gait — map degrees to a precise number of turn
-        # cycles / a coordinate trajectory. Stage 1 uses one canned turn action.
-        action = "turn right" if degrees >= 0 else "turn left"
-        self._is_moving = True
-        try:
-            self._do_action(action, 1, speed)
-            if self.world is not None:
-                self.world.rotate(degrees)
-            self._pose = Pose.STANDING
-        finally:
-            self._is_moving = False
-
-    def test_leg(self, leg: int, speed: int = DEFAULT_SPEED) -> None:
-        """Diagnostic: move a single leg to its standing coordinate, gently.
-
-        Isolates a leg that drives to a wrong/extreme position. Only the one leg
-        moves, so a stall can't load all 12 servos at once.
-        """
-        if not 0 <= leg < LEG_COUNT:
-            raise ValueError(f"leg must be 0..{LEG_COUNT - 1}, got {leg}")
-        self._is_moving = True
-        try:
-            self._do_single_leg(leg, STAND_COORD[leg], speed)
-        finally:
-            self._is_moving = False
+    def motion_state(self) -> dict:
+        return {"sequence": self._sequence, "enabled": self.enabled,
+                "initialized": self._crawler is not None,
+                "initialization_executed": self._initialization_executed,
+                "stop_latched": self._stop_event.is_set(),
+                "unavailable_reason": self.unavailable_reason,
+                "last_result": asdict(self.last_result) if self.last_result else None,
+                "position_feedback": False,
+                "turn_model": "idealized_simulation" if self.simulate else "unmeasured_vendor_cycle"}
 
     def get_status(self) -> RobotStatus:
-        return RobotStatus(
-            pose=self._pose,
-            is_moving=self._is_moving,
-            servo_count=SERVO_COUNT,
-            simulate=self.simulate,
-            uptime_s=round(time.monotonic() - self._started_at, 3),
-        )
+        return RobotStatus(pose=self._pose, is_moving=self._is_moving,
+                           servo_count=SERVO_COUNT, simulate=self.simulate,
+                           reflex_stopped=self._reflex_stopped,
+                           uptime_s=round(time.monotonic() - self._started_at, 3))
