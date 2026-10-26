@@ -132,3 +132,11 @@ Compileall, launcher shell syntax and diff whitespace checks passed.
 No live HAT integration, audible output, microphone capture or device setting was
 tested here. Owner-provided one-shot v4/2.5.3/GPIO/ALSA evidence is distinguished
 from application acceptance in the [profile contract and opt-in test guide](robot-hat-speaker.md).
+
+## Mission-control follow-up — 2026-10-26
+
+See [dashboard metrics, camera timing, validation limits and read-only probe](mission-control.md).
+The final focused suite passed 287 tests and off-body/nine scenarios. Browser
+fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
+errors. The earlier full run hit the reproduced baseline explicit-resume race;
+no physical acceptance is claimed.

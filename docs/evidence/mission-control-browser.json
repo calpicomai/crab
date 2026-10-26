@@ -1,0 +1,21 @@
+{
+  "scope": "Synthetic browser fixtures on explicit local simulation; no physical camera/network/host performance claim",
+  "screenshots": [
+    "real-connected-desktop.png",
+    "vitals-desktop.png",
+    "simulation-desktop.png",
+    "real-connected-mobile.png",
+    "failure-mobile.png",
+    "disconnected-desktop.png"
+  ],
+  "native_no_upscale": true,
+  "stop_visible_in_expanded_camera": true,
+  "resume_requires_confirmation": true,
+  "stop_during_slow_decode": true,
+  "peak_preview_requests": 1,
+  "replaced_pending_frames": 1,
+  "mobile_no_overflow": true,
+  "stop_failure_honest": true,
+  "stale_resume_disabled": true,
+  "javascript_errors": []
+}

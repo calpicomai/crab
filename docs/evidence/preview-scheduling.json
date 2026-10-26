@@ -1,0 +1,19 @@
+{
+  "scope": "Node with synthetic 50 ms fetch and 120 ms decode; four seconds per path. Demonstrates scheduler overlap only, not real JPEG decode, Pi encoding, LAN or display speed.",
+  "baseline_ref": "8482f487ca92e78f2530dcb6ccc0ab66ad89489e",
+  "serial_baseline": {
+    "seconds": 4.001288684,
+    "requests": 24,
+    "decoded_frames": 23,
+    "decoded_fps": 5.748148113374166,
+    "peak_requests": 1
+  },
+  "bounded_overlap": {
+    "seconds": 4.001162046,
+    "requests": 41,
+    "decoded_frames": 32,
+    "decoded_fps": 7.997676582979364,
+    "peak_requests": 1,
+    "replaced_pending_frames": 6
+  }
+}
