@@ -98,6 +98,27 @@ class CameraProfileTests(unittest.TestCase):
         self.assertEqual(camera.capture_settings["requested_bitrate_bps"], 4_000_000)
         self.assertFalse(camera.health().available, "no frame means no capture health")
 
+    def test_hardware_profile_preserves_dashboard_cadence_and_compression_metadata(self):
+        camera = PiCamera(960, 720, fps=15, encoder="mjpeg_hw")
+        driver = Mock(camera_controls={}, post_callback=None,
+                      camera_properties={"Model": "ov5647"})
+        with patch("robot.camera._PICAMERA2_AVAILABLE", True), patch("robot.camera.Picamera2", return_value=driver), patch("robot.camera.FileOutput", create=True), patch("robot.camera.hardware_mjpeg", return_value=(Hardware(4_000_000), 4_000_000)):
+            camera.start()
+        self.addCleanup(camera.stop)
+        driver.post_callback(SimpleNamespace(get_metadata=lambda: {"SensorTimestamp": 1_000_000_000}))
+        driver.post_callback(SimpleNamespace(get_metadata=lambda: {"SensorTimestamp": 1_100_000_000}))
+        camera._buffer.write(b"fake encoded frame")
+        stats = camera.stats()
+        self.assertEqual(stats["capture_fps"], 10)
+        self.assertEqual(stats["capture_fps_source"], "SensorTimestamp cadence")
+        self.assertEqual(stats["sensor_model"], "ov5647")
+        self.assertEqual(stats["requested_width"], 960)
+        self.assertEqual(stats["requested_bitrate_bps"], 4_000_000)
+        self.assertFalse(stats["quality_applied"])
+        self.assertFalse(stats["hardware_benchmark_verified"])
+        self.assertIn("V4L2", stats["encoder"])
+        self.assertIn("encoded-output", stats["timestamp_kind"])
+
     def test_unsupported_hardware_fails_before_camera_construction_and_no_software_fallback(self):
         hardware = Mock(side_effect=RuntimeError("hardware not supported"))
         camera = PiCamera(encoder="mjpeg_hw")

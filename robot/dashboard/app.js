@@ -410,7 +410,8 @@ function paint(now){
     text("camera-stats",cameraReason||(!Number.isFinite(age)?"Frame timing unknown · clock calibration required":age>2000?"Last frame is stale · inspect capture and transport":"Newest decoded preview · encoded age excludes exposure and encode delay"));
     html("camera-timing",[["Headers / first-byte wait",fmt(cameraHeaderMs,1," ms")],["Body transfer",fmt(cameraTransferMs,1," ms")],["JPEG decode",fmt(cameraDecodeMs,1," ms")],["Decode-slot wait",fmt(cameraQueueMs,1," ms")],["JPEG payload",cameraBytes===null?"—":fmt(cameraBytes/1024,1," KiB")],["Replaced before decode",String(cameraDropped)]].map(([label,value])=>`<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(""));
     const config=latestState?.camera_capture;
-    text("camera-config",config?`${config.sensor_model||"Sensor model unreported"} · ${config.encoder||"encoder unknown"} · requested ${config.requested_width??"—"}×${config.requested_height??"—"} @ ${config.requested_fps??"—"} fps · JPEG quality ${config.requested_quality??"—"}${config.quality_applied===false?" (not applied by this encoder API)":""}. Capture cadence: ${config.capture_fps_source||"unmeasured"}.`:"Capture configuration has not arrived.");
+    const compression=config?.encoder_requested==="mjpeg_hw"?`${fmt(numeric(config.requested_bitrate_bps)===null?null:config.requested_bitrate_bps/1e6,2)} Mbps target · JPEG quality not applied`:`JPEG quality ${config?.requested_quality??"—"}${config?.quality_applied===false?" (not applied by this encoder API)":""}`;
+    text("camera-config",config?`${config.sensor_model||"Sensor model unreported"} · ${config.encoder||"encoder unknown"} · requested ${config.requested_width??"—"}×${config.requested_height??"—"} @ ${config.requested_fps??"—"} fps · ${compression}. Capture cadence: ${config.capture_fps_source||"unmeasured"}.`:"Capture configuration has not arrived.");
     lastPaint=now;
   }requestAnimationFrame(paint);
 }
