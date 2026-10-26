@@ -110,3 +110,11 @@ The complete `bash test_sim.sh` failed the live explicit-resume assertion after
 its earlier portions passed. An unchanged `b505086` baseline reproduced the same
 resume/control-epoch ordering failure. This follow-up does not claim a green full
 smoke or physical acceptance, and does not repair sonar or audio.
+
+## Opt-in camera encoder follow-up — 2026-10-26
+
+The [explicit hardware MJPEG profile](camera-encoding.md) retains software JPEG
+by default. Final quick validation passed 284 tests, off-body/nine scenarios and
+HTTP/virtual-body. The preceding full 283-test revision also passed live
+WebSocket greeting/priority stop/resume. Hardware/API compatibility and physical
+throughput remain unverified; tests use fake encoders and explicit simulation.

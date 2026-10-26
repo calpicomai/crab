@@ -137,3 +137,7 @@ Later proposals cover measured local model residency within 8GB, supervised
 exploration through a common clearance gate and richer user-led play. They are
 not implied by the presence of older world-model/training experiments. Existing
 world databases remain untouched and recoverable.
+
+An [explicit hardware MJPEG profile](docs/camera-encoding.md) is available for
+owner-controlled comparison on supported Pi hardware; software JPEG remains the
+default and physical speed/clarity are unverified.

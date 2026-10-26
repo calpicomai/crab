@@ -18,6 +18,7 @@ import threading
 import time
 
 from shared.health import InputHealth
+from .camera_encoder import hardware_mjpeg
 
 logger = logging.getLogger("picrawler.camera")
 
@@ -98,16 +99,22 @@ class PiCamera:
         fps: int = 15,
         quality: int = 80,
         simulate: bool = False,
+        encoder: str = "jpeg",
+        mjpeg_bitrate: int | str = 4_000_000,
     ) -> None:
         self.width = width
         self.height = height
         self.fps = max(1, fps)
         self.quality = quality
         self.simulate = bool(simulate)
+        self.encoder_mode = encoder
+        self.mjpeg_bitrate = mjpeg_bitrate
         self._failure: str | None = "not started"
         self._buffer = _FrameBuffer("simulated" if self.simulate else "real")
         self.capture_settings = {"requested_fps": self.fps, "rate_control": "not started",
-                                 "achieved_fps_verified": False}
+                                 "achieved_fps_verified": False, "encoder_requested": encoder,
+                                 "encoder": "not started", "quality_applied": False,
+                                 "hardware_benchmark_verified": False}
         self._picam2 = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -125,9 +132,15 @@ class PiCamera:
             return
         self._stop.clear()
         self._buffer.reset()
+        self.capture_settings.update(encoder="not started", quality_applied=False)
+        if self.encoder_mode not in {"jpeg", "mjpeg_hw"}:
+            self._failure = "camera encoder must be jpeg or mjpeg_hw"
+            return
         if self.simulate:
             self._failure = None
             self.capture_settings["rate_control"] = "simulated timer"
+            self.capture_settings["encoder"] = "Pillow synthetic; hardware profile not applied"
+            self.capture_settings["quality_applied"] = True
             logger.warning("PiCamera in SIMULATE mode — serving synthetic frames")
             self._thread = threading.Thread(target=self._run_synthetic, daemon=True)
             self._thread.start()
@@ -136,6 +149,17 @@ class PiCamera:
             self._failure = "picamera2 unavailable"
             return
         try:  # pragma: no cover - requires hardware
+            main = {"size": (self.width, self.height)}
+            quality_applied = False
+            if self.encoder_mode == "mjpeg_hw":
+                if (type(self.width) is not int or type(self.height) is not int or
+                    not 2 <= self.width <= 1920 or not 2 <= self.height <= 1080 or
+                    self.width % 2 or self.height % 2 or not 1 <= self.fps <= 30):
+                    raise ValueError("hardware MJPEG profile requires even dimensions up to 1920x1080 and 1..30 FPS")
+                encoder, bitrate = hardware_mjpeg(self.mjpeg_bitrate)
+                main["format"] = "YUV420"
+                encoder_label = "Picamera2 V4L2 MJPEG (hardware requested; benchmark unverified)"
+                self.capture_settings["requested_bitrate_bps"] = bitrate
             self._picam2 = Picamera2()
             controls = {}
             if "FrameDurationLimits" in self._picam2.camera_controls:
@@ -148,15 +172,18 @@ class PiCamera:
                 self.capture_settings["rate_control"] = "camera does not advertise FrameDurationLimits"
                 logger.warning("%s", self.capture_settings["rate_control"])
             cfg = self._picam2.create_video_configuration(
-                main={"size": (self.width, self.height)}, controls=controls, queue=False)
+                main=main, controls=controls, queue=False)
             self._picam2.configure(cfg)
-            # JpegEncoder is picamera2's MJPEG-streaming encoder. `q` (JPEG quality)
-            # is accepted on current versions; fall back if an older one differs.
-            try:
-                encoder = JpegEncoder(q=self.quality)
-            except TypeError:
-                encoder = JpegEncoder()
+            if self.encoder_mode == "jpeg":
+                # Preserve default initialization/error order and quality API.
+                try:
+                    encoder = JpegEncoder(q=self.quality)
+                    quality_applied = True
+                except TypeError:
+                    encoder = JpegEncoder()
+                encoder_label = "Picamera2 JpegEncoder (software JPEG)"
             self._picam2.start_recording(encoder, FileOutput(self._buffer))
+            self.capture_settings.update(encoder=encoder_label, quality_applied=quality_applied)
             self._failure = None
             logger.info("PiCamera started (%dx%d@%d)", self.width, self.height, self.fps)
         except Exception as exc:  # noqa: BLE001
