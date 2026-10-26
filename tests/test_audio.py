@@ -68,6 +68,13 @@ class AudioTests(unittest.TestCase):
             self.assertFalse(speaker.health()["audible_verified"])
             self.assertTrue(speaker.suppressed())
 
+    def test_hat_profile_requires_explicit_board_pin_and_route_before_output(self):
+        with patch("robot.audio._APLAY", "/fake/aplay"), patch("robot.audio.run_audio_process") as run:
+            speaker = PiSpeaker(backend="robot_hat_v4", device="plug:softvol")
+            self.assertFalse(speaker.play_result(sound_wav())["ok"])
+            run.assert_not_called()
+            self.assertIn("verified", speaker.health()["reason"])
+
     def test_aplay_cancellation_terminates_owned_process(self):
         registered = threading.Event()
         release = threading.Event()
