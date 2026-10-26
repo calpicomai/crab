@@ -19,6 +19,7 @@ from websockets.exceptions import InvalidStatus
 from websockets.sync.client import ClientConnection, connect
 
 from shared import Action, CommandResponse
+from shared.clock import CaptureClock, capture_age
 from shared.local import require_local_url
 from shared.realtime import (MAX_MESSAGE_BYTES, WS_PATH, CommandRequest, ErrorMessage,
                              EventMessage, HelloMessage, LeaseMessage, LeaseRequest,
@@ -113,6 +114,8 @@ class RealtimeClient:
         self._ping = None
         self._next_ping = 0.0
         self._last_rtt_ms = None
+        self._clock = None
+        self._waiting_status = None
         self._reconnects = 0
         self._failure_reason = None
         self._callback_error = None
@@ -174,6 +177,8 @@ class RealtimeClient:
             self._ready.clear()
             self._generation += 1
             self._status = None
+            self._clock = None
+            self._waiting_status = None
             self._failure_reason = str(reason)[:240]
             pending = list(self._pending.values())
             self._pending.clear()
@@ -225,6 +230,8 @@ class RealtimeClient:
                         self._control_epoch = None
                         self._status_sequence = self._event_sequence = 0
                         self._last_status_mono = None
+                        self._clock = None
+                        self._waiting_status = None
                         self._ping = None
                         self._reconnects = attempts
                     opened = time.monotonic()
@@ -260,6 +267,7 @@ class RealtimeClient:
     def _receive(self, connection, raw):
         message = parse_server_message(raw)
         callback = None
+        waiting = None
         with self._lock:
             if self._connection is not connection:
                 return
@@ -286,15 +294,23 @@ class RealtimeClient:
                     return
                 if not self._accept_epoch_locked(message.control_epoch):
                     return
+                if self._clock is None:
+                    if self._waiting_status is None or message.sequence > self._waiting_status.sequence:
+                        self._waiting_status = message  # one latest sample, never fresh by receipt
+                    return
                 status = message.status.model_dump(mode="json")
                 status["control_epoch"] = message.control_epoch
                 stamp = status.get("observed_at")
-                if stamp is None or not 0 <= time.time() - stamp <= self.status_timeout_s:
+                age = capture_age(stamp, self._clock, mono=now)
+                if age is None or age > self.status_timeout_s:
                     raise RealtimeUnavailable("WebSocket robot status capture is stale or clock is inconsistent")
                 if self._status is not None and stamp <= self._status.get("observed_at", 0):
                     return
                 self._status_sequence = message.sequence
-                self._last_status_mono = now
+                status["_clock"] = self._clock.model_dump()
+                for health in status.get("inputs", {}).values():
+                    health["clock"] = status["_clock"]
+                self._last_status_mono = now-age
                 self._last_status_received_at = time.time()
                 self._status = status
                 self._failure_reason = None
@@ -306,13 +322,21 @@ class RealtimeClient:
                 self._event_sequence = message.sequence
                 if not self._accept_epoch_locked(message.control_epoch):
                     return
-                if 0 <= time.time() - message.event.timestamp <= 5:
+                age = capture_age(message.event.timestamp, self._clock) if self._clock else None
+                if age is not None and age <= 5:
                     callback = ("event", {**message.event.model_dump(),
+                                          "_clock": self._clock.model_dump(),
                                           "control_epoch": message.control_epoch})
             elif isinstance(message, PongMessage):
                 if self._ping and message.request_id == self._ping[0]:
+                    try:
+                        self._clock = CaptureClock.measure(message.server_at, self._ping[2], self._ping[1],
+                                                           time.time(), now, self._clock)
+                    except ValueError as exc:
+                        raise RealtimeUnavailable(f"WebSocket clock calibration failed: {exc}") from exc
                     self._last_rtt_ms = round((now - self._ping[1]) * 1000, 2)
                     self._ping = None
+                    waiting, self._waiting_status = self._waiting_status, None
             elif isinstance(message, (ResultMessage, LeaseMessage, ErrorMessage)):
                 pending = self._pending.get(message.request_id)
                 if pending is None:
@@ -341,6 +365,8 @@ class RealtimeClient:
                 self._notify_status(callback[1])
             else:
                 self._notify_event(callback[1])
+        if waiting is not None:
+            self._receive(connection, encode_message(waiting))
 
     def _heartbeat(self, connection, opened):
         with self._lock:
@@ -351,6 +377,11 @@ class RealtimeClient:
                 if now - opened > 1.0:
                     raise RealtimeUnavailable("WebSocket hello timed out")
                 return
+            if self._clock is not None:
+                try:
+                    self._clock.remote_bounds(mono=now)
+                except ValueError as exc:
+                    raise RealtimeUnavailable(f"WebSocket clock invalid: {exc}") from exc
             if now - (self._last_status_mono or opened) > self.status_timeout_s:
                 raise RealtimeUnavailable("WebSocket status stream expired")
             if self._ping and now - self._ping[1] > self._hello.heartbeat_timeout_s:
@@ -359,7 +390,7 @@ class RealtimeClient:
                 return
             request_id = uuid.uuid4().hex
             ping = PingRequest(boot_id=self._boot_id, session_id=self._session_id, request_id=request_id)
-            self._ping = (request_id, now)
+            self._ping = (request_id, now, time.time())
             self._next_ping = now + self._hello.heartbeat_s
             dispatch = _Dispatch(connection, self._session_id, ping,
                                  now + self._hello.heartbeat_timeout_s)
@@ -379,6 +410,8 @@ class RealtimeClient:
                          and (dispatch.generation is None or dispatch.generation == self._generation))
                 if dispatch.pending is not None:
                     valid = valid and self._pending.get(dispatch.pending.request_id) is dispatch.pending
+                    age = capture_age(self._status.get("observed_at") if self._status else None, self._clock)
+                    valid = valid and self._clock is not None and age is not None and age <= self.status_timeout_s
                 expired = time.monotonic() >= dispatch.send_before
                 if valid and not expired and dispatch.pending:
                     dispatch.pending.sent = True  # send can partially complete before raising
@@ -400,8 +433,10 @@ class RealtimeClient:
         pending = _Pending(message.request_id, connection, generation, kind, deadline,
                            action=action, command_id=command_id, control_epoch=control_epoch)
         with self._lock:
+            age = capture_age(self._status.get("observed_at") if self._status else None, self._clock)
             if (self._closed.is_set() or self._connection is not connection or not self._ready.is_set()
                     or generation != self._generation or self._last_status_mono is None
+                    or self._clock is None or age is None or age > self.status_timeout_s
                     or time.monotonic() - self._last_status_mono > self.status_timeout_s):
                 raise RealtimeUnavailable("WebSocket command generation or session changed before dispatch")
             self._pending[pending.request_id] = pending
@@ -478,7 +513,8 @@ class RealtimeClient:
                     "last_rtt_ms": self._last_rtt_ms,
                     "last_status_received_at": self._last_status_received_at,
                     "last_message_received_at": self._last_message_received_at,
-                    "status_capture_age_s": None if stamp is None else round(time.time() - stamp, 3),
+                    "status_capture_age_s": capture_age(stamp, self._clock) if self._clock else None,
+                    "clock": self._clock.model_dump() if self._clock else None,
                     "pending_requests": len(self._pending), "send_queue_depth": self._outgoing.qsize(),
                     "callback_error": self._callback_error}
 

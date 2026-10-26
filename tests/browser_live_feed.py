@@ -131,6 +131,8 @@ def main(argv=None):
             cdp.call("Runtime.enable")
             cdp.call("Network.enable")
             cdp.call("Page.enable")
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+                "window.realDateNow=Date.now.bind(Date); Date.now=()=>realDateNow()+30;"})
             cdp.call("Emulation.setDeviceMetricsOverride", {"width": 1280, "height": 1000,
                                                             "deviceScaleFactor": 1, "mobile": False})
             cdp.call("Page.navigate", {"url": base + "/sim"})
@@ -149,6 +151,7 @@ def main(argv=None):
                            "max_age_s": 2, "used": True}},
                        "intentions": [], "movements": [], "_publisher_id": "browser-check", "_sequence": 1,
                        "_produced_at": time.time(), "_sent_at": time.time(),
+                       "_produced_at_pi_lower": time.time(),
                        "_publisher_started_at_ns": time.time_ns()}
             started = time.monotonic()
             response = http.post(base + "/sim/brain", json=fixture)
@@ -160,6 +163,7 @@ def main(argv=None):
             report["initial_feed_text"] = cdp.value("document.querySelector('#feed-state').textContent")
             cdp.wait("document.querySelector('#feed-stats').textContent.includes('Pi WebSocket ready')")
             report["websocket_health_visible"] = cdp.value("document.querySelector('#feed-stats').textContent.includes('round trip 4.2ms')")
+            report["browser_clock_skew_ms"] = 30
             assert report["websocket_health_visible"], report
             # Keep pumping CDP so completed requests are observed, not counted as a backlog.
             end = time.monotonic()+1.2
@@ -185,7 +189,7 @@ def main(argv=None):
             cdp.value("pauseFeeds(); connectState(); nextCamera(); true")
             cdp.wait("document.querySelector('#feed-state').textContent.includes('reconnecting')", timeout=3)
             fixture.update(name="Latest after reconnect", _sequence=2,
-                           _produced_at=time.time(), _sent_at=time.time())
+                           _produced_at=time.time(), _produced_at_pi_lower=time.time(), _sent_at=time.time())
             assert http.post(base + "/sim/brain", json=fixture).json()["ok"]
             cdp.call("Network.emulateNetworkConditions", {"offline": False, "latency": 0,
                 "downloadThroughput": -1, "uploadThroughput": -1})

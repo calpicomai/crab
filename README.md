@@ -54,6 +54,9 @@ HTTP feeds. Link health and round-trip time appear on the dashboard. A lost
 companion connection latches stop; reconnect never replays a command or resumes
 movement. Update Pi and brain together, then run read-only readiness before
 starting the companion. See [transport contract and measurements](docs/websocket-transport.md).
+Capture timing accepts a measured, bounded clock offset instead of assuming
+identical Pi/Jetson/browser wall clocks. See [clock policy, validation limits and
+disabled-hardware update steps](docs/companion-clock.md).
 
 Voice/effects are opt-in through `PET_VOICE=1` or `--voice`. Effects work without
 Piper; speech additionally requires a local Piper binary and `.onnx` plus

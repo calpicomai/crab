@@ -95,3 +95,18 @@ external requests; restricted runs can hang on a blocked wake socket. This was
 treated as an execution constraint, not a reason to weaken the tests.
 
 Next gate: [explicitly approved staged hardware acceptance](HARDWARE_ACCEPTANCE.md).
+
+## Clock follow-up — 2026-10-26
+
+`bash test_sim.sh --quick` passed 272 tests, off-body checks, nine scenarios and
+isolated simulated HTTP/virtual-body checks. The real Chromium check passed with
+an injected +30 ms browser clock, stale-data/reconnect assertions, no JavaScript
+errors, no mobile overflow and at most one camera request in flight. Compileall,
+shell syntax and `git diff --check` passed. See [clock policy, exact validation
+limits and owner-controlled disabled-hardware steps](companion-clock.md) and
+[browser report](evidence/companion-clock-browser.json).
+
+The complete `bash test_sim.sh` failed the live explicit-resume assertion after
+its earlier portions passed. An unchanged `b505086` baseline reproduced the same
+resume/control-epoch ordering failure. This follow-up does not claim a green full
+smoke or physical acceptance, and does not repair sonar or audio.

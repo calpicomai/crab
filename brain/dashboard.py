@@ -7,6 +7,7 @@ import time
 import uuid
 
 import httpx
+from shared.clock import CaptureClock
 from shared.local import require_local_url
 
 
@@ -47,9 +48,17 @@ class Dashboard:
             if self._closed:
                 return
             self._sequence += 1
+            produced_mono = time.monotonic()
             payload.update(_publisher_id=self._publisher_id, _sequence=self._sequence,
                            _publisher_started_at_ns=self._publisher_started_at_ns,
                            _produced_at=time.time())
+            # Earliest possible Pi time of production gives the browser an
+            # upper source age. Never use a raw Jetson stamp as Pi time.
+            try:
+                anchor = CaptureClock.model_validate(payload.get("pi_clock"))
+                payload["_produced_at_pi_lower"] = anchor.remote_bounds(payload["_produced_at"], produced_mono)[0]
+            except (ValueError, TypeError):
+                payload["_produced_at_pi_lower"] = None
             if self._pending is not None:
                 self._dropped += 1
             self._pending = payload
