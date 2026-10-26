@@ -154,3 +154,7 @@ CAMERA_WIDTH: int = int(os.environ.get("PICRAWLER_CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT: int = int(os.environ.get("PICRAWLER_CAMERA_HEIGHT", "480"))
 CAMERA_FPS: int = int(os.environ.get("PICRAWLER_CAMERA_FPS", "15"))
 CAMERA_QUALITY: int = int(os.environ.get("PICRAWLER_CAMERA_QUALITY", "80"))
+# Explicit hardware profile; unsupported/missing APIs are unavailable, not fallback.
+CAMERA_ENCODER: str = os.environ.get("PICRAWLER_CAMERA_ENCODER", "jpeg").strip().lower()
+# Validated only when the hardware profile is selected; malformed values fail capture.
+CAMERA_MJPEG_BITRATE: str = os.environ.get("PICRAWLER_CAMERA_MJPEG_BITRATE", "4000000")

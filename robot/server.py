@@ -83,6 +83,8 @@ camera = (
         fps=config.CAMERA_FPS,
         quality=config.CAMERA_QUALITY,
         simulate=config.SIMULATE,
+        encoder=config.CAMERA_ENCODER,
+        mjpeg_bitrate=config.CAMERA_MJPEG_BITRATE,
     )
     if config.CAMERA_ENABLED
     else None

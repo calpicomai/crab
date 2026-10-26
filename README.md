@@ -141,5 +141,9 @@ exploration through a common clearance gate and richer user-led play. They are
 not implied by the presence of older world-model/training experiments. Existing
 world databases remain untouched and recoverable.
 
+An [explicit hardware MJPEG profile](docs/camera-encoding.md) is available for
+owner-controlled comparison on supported Pi hardware; software JPEG remains the
+default and physical speed/clarity are unverified.
+
 The local [operations dashboard](docs/mission-control.md) presents camera,
 companion intent/results, bounded live vitals and explicit safety/health states.
