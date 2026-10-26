@@ -8,6 +8,7 @@ import uuid
 
 import httpx
 from shared.clock import CaptureClock
+from shared.vitals import SystemVitals
 from shared.local import require_local_url
 
 
@@ -26,6 +27,7 @@ class Dashboard:
         self._last_latency_ms = self._last_success_at = None
         self._last_error = None
         self._thread = None
+        self._vitals = SystemVitals("jetson")
         if self.url:
             self._thread = threading.Thread(target=self._run, daemon=True, name="dashboard-publisher")
             self._thread.start()
@@ -82,6 +84,7 @@ class Dashboard:
                     payload, self._pending = self._pending, None
                 started = time.monotonic()
                 payload["_sent_at"] = time.time()
+                payload["host_vitals"] = self._vitals.snapshot()
                 try:
                     response = client.post(self.url, json=payload)
                     response.raise_for_status()

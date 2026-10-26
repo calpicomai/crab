@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crab · Operations</title><style>__STYLES__</style></head>
+<body>
+<header class="safety-bar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>·</span></span><div><span class="eyebrow">CRAB / OPERATIONS</span><h1 id="petname">Crab</h1></div></div>
+  <div class="safety-state"><span id="provenance" class="badge neutral">SOURCE UNKNOWN</span><span id="motion-status" class="badge neutral">MOTION UNKNOWN</span><span id="feed-state" class="connection">connecting…</span></div>
+  <div class="safety-controls"><button id="resume-review" class="button secondary">Review resume</button><button id="stop-control" class="button stop" data-stop><span aria-hidden="true">■</span> STOP</button></div>
+</header>
+<div id="resume-confirm" class="resume-confirm" hidden><div><strong>Clear the software stop latch?</strong><p>This does not enable actuators or start movement. Check the area and connection first.</p></div><button id="resume-confirm-button" class="button">Send fresh resume</button><button id="resume-cancel" class="button secondary">Cancel</button></div>
+<main>
+  <section class="operation-strip" aria-label="Current operation">
+    <div><span class="eyebrow">COMPANION STATE</span><strong id="episode">Waiting for companion</strong><p id="blocked">Start the companion to see current intent and results.</p></div>
+    <div class="strip-stat"><span>Pi transport</span><strong id="pi-link">Unknown</strong><small id="pi-link-detail">No status yet</small></div>
+    <div class="strip-stat"><span>Jetson companion</span><strong id="jetson-link">Unknown</strong><small id="jetson-link-detail">No telemetry yet</small></div>
+    <div class="strip-stat"><span>Clock offset / uncertainty</span><strong id="clock-value">Unmeasured</strong><small id="clock-detail">Calibration required</small></div>
+  </section>
+  <div class="operations-grid">
+    <section id="camera-panel" class="panel camera-panel" aria-labelledby="camera-heading">
+      <div class="panel-heading"><div><span class="eyebrow">LIVE FEED / PI CAMERA</span><h2 id="camera-heading">A view from Crab</h2></div><div class="camera-tools"><button id="camera-size" class="button quiet" aria-pressed="false">Native 1:1</button><button id="camera-expand" class="button quiet" aria-expanded="false">Expand</button></div></div>
+      <div class="camera-stage"><img id="cam" alt="Latest camera frame; no image available yet"><div id="camera-empty" class="camera-empty"><span class="reticle" aria-hidden="true">+</span><strong>Waiting for a frame</strong><p>Capture and connection health appear below.</p></div><span id="camera-source" class="camera-source">CAMERA / UNKNOWN</span></div>
+      <div class="camera-readout"><div><span>Actual frame / display</span><strong id="camera-dimensions">—</strong></div><div><span>Capture / encoded</span><strong id="capture-rate">unmeasured / — fps</strong></div><div><span>Received / preview decoded</span><strong id="preview-rate">— / — fps</strong></div><div><span>Encoded age · upper bound</span><strong id="camera-age">Unknown</strong></div></div>
+      <div id="camera-stats" class="status-note">Waiting for camera. Encoded-frame age excludes sensor exposure and encode delay.</div>
+      <details class="camera-details"><summary>Compression and latency breakdown</summary><div class="timing-grid" id="camera-timing"></div><p id="camera-config" class="muted">Capture configuration has not arrived.</p><p class="muted">Native pixels are never enlarged automatically. JPEG is already compressed. Higher quality can cost more CPU and bandwidth. No autofocus or exposure-to-screen latency is claimed.</p></details>
+    </section>
+    <aside class="companion-column">
+      <section class="panel interaction" aria-labelledby="interaction-heading"><div class="panel-heading"><div><span class="eyebrow">INTERACTION / TYPED INPUT</span><h2 id="interaction-heading">Talk to Crab</h2></div><span id="mode" class="badge neutral">stationary</span></div>
+        <div class="attention"><span id="mood" class="attention-mark">●</span><div><span class="eyebrow">CURRENT INTENT</span><strong id="current-intent">Waiting for evidence</strong><p id="intent-reason">No behavior sample has arrived.</p></div></div>
+        <form id="engagement-form"><label for="engagement">Your message</label><div class="message-row"><input id="engagement" maxlength="500" placeholder="Hello, Crab…" autocomplete="off"><button id="send-control" class="button" type="submit">Send</button></div></form>
+        <div class="quick-actions"><button class="button quiet" data-message="hello">Hello</button><button class="button quiet" data-message="let's play">Let’s play</button><button class="button quiet" data-message="settle">Settle nearby</button></div>
+        <p id="input-result" class="status-note" role="status" aria-live="polite">Typed input stays local. Stop remains available during connection failure.</p>
+        <div class="last-response"><span class="eyebrow">LATEST RESPONSE</span><p id="last-response">No response recorded.</p><small id="response-outcome">Output is not verified audible.</small></div>
+      </section>
+      <section class="panel timeline-panel" aria-labelledby="timeline-heading"><div class="panel-heading"><div><span class="eyebrow">DECISIONS / RESULTS</span><h2 id="timeline-heading">What happened & why</h2></div><span id="timeline-count" class="counter">0</span></div><ol id="timeline" class="timeline"><li class="empty">Intentions and outcomes appear here when the companion runs.</li></ol></section>
+    </aside>
+  </div>
+  <section class="vitals-section" aria-labelledby="vitals-heading"><div class="section-heading"><div><span class="eyebrow">LIVE VITALS / ROLLING HISTORY</span><h2 id="vitals-heading">Signals over the last 2 minutes</h2></div><span class="muted">1-second samples · gaps mean stale or unknown</span></div>
+    <div class="vitals-grid">
+      <article class="graph-panel"><div><h3>Battery</h3><strong id="battery-value">Unknown</strong></div><canvas id="battery-graph" width="720" height="190" role="img" aria-label="Battery voltage over the last two minutes"></canvas><p>Volts · no battery percentage estimate</p></article>
+      <article class="graph-panel"><div><h3>Sonar clearance</h3><strong id="sonar-value">No reading</strong></div><canvas id="sonar-graph" width="720" height="190" role="img" aria-label="Sonar range in centimetres over the last two minutes"></canvas><p>Centimetres · missing echoes remain gaps</p></article>
+      <article class="graph-panel"><div><h3>Frame cadence</h3><strong id="fps-value">Unmeasured</strong></div><canvas id="fps-graph" width="720" height="190" role="img" aria-label="Camera capture, encoded and preview decoded frames per second"></canvas><p><i class="key capture"></i>Capture <i class="key encoded"></i>Encoded <i class="key preview"></i>Preview decoded · fps</p></article>
+      <article class="graph-panel"><div><h3>Frame age & delivery</h3><strong id="latency-value">Unknown</strong></div><canvas id="latency-graph" width="720" height="190" role="img" aria-label="Encoded frame age upper bound and JPEG request round trip in milliseconds"></canvas><p><i class="key age"></i>Age upper bound <i class="key preview"></i>Request RTT · ms</p></article>
+      <article class="graph-panel"><div><h3>Link & clock</h3><strong id="network-value">Unknown</strong></div><canvas id="network-graph" width="720" height="190" role="img" aria-label="Pi Jetson ping round trip and measured clock interval width in milliseconds"></canvas><p><i class="key encoded"></i>Pi–Jetson RTT <i class="key age"></i>Clock uncertainty · ms</p></article>
+      <article class="graph-panel"><div><h3>Host CPU</h3><strong id="cpu-value">Warming up</strong></div><canvas id="cpu-graph" width="720" height="190" role="img" aria-label="Pi and Jetson whole host CPU usage percentages"></canvas><p><i class="key encoded"></i>Pi <i class="key preview"></i>Jetson · whole-host %</p></article>
+      <article class="graph-panel"><div><h3>Host memory</h3><strong id="memory-value">Unknown</strong></div><canvas id="memory-graph" width="720" height="190" role="img" aria-label="Pi and Jetson used host memory in mebibytes"></canvas><p><i class="key encoded"></i>Pi <i class="key preview"></i>Jetson · MiB used</p></article>
+      <article class="graph-panel"><div><h3>CPU temperature</h3><strong id="temperature-value">Unmeasured</strong></div><canvas id="temperature-graph" width="720" height="190" role="img" aria-label="Read-only Pi and Jetson CPU thermal measurements in Celsius"></canvas><p><i class="key encoded"></i>Pi <i class="key preview"></i>Jetson · °C, where observable</p></article>
+    </div>
+  </section>
+  <section aria-labelledby="systems-heading"><div class="section-heading"><div><span class="eyebrow">SENSORS / SERVICES</span><h2 id="systems-heading">Available, used, verified</h2></div><span id="evidence" class="muted">Hardware acceptance remains separate.</span></div><div id="system-cards" class="systems-grid"></div></section>
+  <details id="simulator" class="panel simulation" hidden><summary>Explicit simulator · idealized world</summary><p class="muted">Kinematic simulation only. This map is not available on the stationary physical robot and does not establish measured position.</p><div class="sim-controls"><button class="button quiet" data-world="pause">Pause world</button><button class="button quiet" data-world="resume">Resume world</button><button class="button quiet" data-world="reset">Reset world</button></div><canvas id="map" width="600" height="600" aria-label="Explicit simulated world"></canvas></details>
+  <details id="diagnostics" class="panel diagnostics"><summary>Diagnostics · timestamps, raw health & logs</summary><p id="feed-stats" class="muted">Waiting for transport diagnostics.</p><p class="muted">Saved narrative is generated identity text, not current perception or learning.</p><p id="saved-narrative"></p><table><thead><tr><th>Input</th><th>Availability / age</th><th>Current use / reason</th></tr></thead><tbody id="inputs"></tbody></table><pre id="intentions"></pre><pre id="audio-health"></pre><pre id="raw-state"></pre></details>
+  <footer>Local operations only · software stop acts at vendor boundaries · keep a physical cutoff accessible</footer>
+</main><script>__SCRIPT__</script></body></html>

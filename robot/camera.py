@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import io
 import logging
+import math
+from collections import deque
 from dataclasses import dataclass
 import threading
 import time
@@ -56,6 +58,7 @@ class _FrameBuffer(io.BufferedIOBase):
         self._provenance = provenance
         self._stopped = False
         self._cond = threading.Condition()
+        self._encoded_times = deque(maxlen=64)
 
     def writable(self) -> bool:
         return True
@@ -67,6 +70,7 @@ class _FrameBuffer(io.BufferedIOBase):
                 return len(data)
             self._sequence += 1
             self._latest = CameraFrame(data, time.time(), self._sequence, self._provenance)
+            self._encoded_times.append(time.monotonic())
             self._cond.notify_all()
         return len(data)
 
@@ -80,12 +84,23 @@ class _FrameBuffer(io.BufferedIOBase):
     def reset(self) -> None:
         with self._cond:
             self._latest = None
+            self._encoded_times.clear()
             self._stopped = False
 
     def stop(self) -> None:
         with self._cond:
             self._stopped = True
             self._cond.notify_all()
+
+    def stats(self):
+        with self._cond:
+            times = list(self._encoded_times)
+            age = time.monotonic()-times[-1] if times else None
+            fps = ((len(times)-1)/(times[-1]-times[0]) if len(times)>1 and times[-1]>times[0]
+                   and age is not None and 0 <= age <= 2 else None)
+            return {"encoded_fps": None if fps is None else round(fps, 1),
+                    "jpeg_bytes": len(self._latest.data) if self._latest else None,
+                    "sequence": self._latest.sequence if self._latest else None}
 
 
 class PiCamera:
@@ -107,7 +122,14 @@ class PiCamera:
         self._failure: str | None = "not started"
         self._buffer = _FrameBuffer("simulated" if self.simulate else "real")
         self.capture_settings = {"requested_fps": self.fps, "rate_control": "not started",
-                                 "achieved_fps_verified": False}
+                                 "achieved_fps_verified": False, "requested_width": width,
+                                 "requested_height": height, "requested_quality": quality,
+                                 "encoder": "Pillow synthetic" if simulate else "Picamera2 JpegEncoder (software JPEG)",
+                                 "timestamp_kind": "encoded-output arrival; excludes exposure/encode latency",
+                                 "sensor_model": None}
+        self._capture_lock = threading.Lock()
+        self._sensor_times = deque(maxlen=64)
+        self._last_sensor_mono = None
         self._picam2 = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -125,6 +147,9 @@ class PiCamera:
             return
         self._stop.clear()
         self._buffer.reset()
+        with self._capture_lock:
+            self._sensor_times.clear()
+            self._last_sensor_mono = None
         if self.simulate:
             self._failure = None
             self.capture_settings["rate_control"] = "simulated timer"
@@ -137,6 +162,8 @@ class PiCamera:
             return
         try:  # pragma: no cover - requires hardware
             self._picam2 = Picamera2()
+            model = getattr(self._picam2, "camera_properties", {}).get("Model")
+            self.capture_settings["sensor_model"] = model if isinstance(model, str) else None
             controls = {}
             if "FrameDurationLimits" in self._picam2.camera_controls:
                 # Official Picamera2 controls.py maps FrameRate to these equal
@@ -150,12 +177,16 @@ class PiCamera:
             cfg = self._picam2.create_video_configuration(
                 main={"size": (self.width, self.height)}, controls=controls, queue=False)
             self._picam2.configure(cfg)
+            if hasattr(self._picam2, "post_callback") and self._picam2.post_callback is None:
+                self._picam2.post_callback = self._capture_metadata
             # JpegEncoder is picamera2's MJPEG-streaming encoder. `q` (JPEG quality)
             # is accepted on current versions; fall back if an older one differs.
             try:
                 encoder = JpegEncoder(q=self.quality)
+                self.capture_settings["quality_applied"] = True
             except TypeError:
                 encoder = JpegEncoder()
+                self.capture_settings["quality_applied"] = False
             self._picam2.start_recording(encoder, FileOutput(self._buffer))
             self._failure = None
             logger.info("PiCamera started (%dx%d@%d)", self.width, self.height, self.fps)
@@ -224,6 +255,32 @@ class PiCamera:
 
     def health(self) -> InputHealth:
         return self._frame_health(self._buffer.snapshot())
+
+    def _capture_metadata(self, request):
+        """Observe the existing request callback; never request another frame."""
+        try:
+            stamp = request.get_metadata().get("SensorTimestamp")
+            if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
+                return
+            with self._capture_lock:
+                if self._sensor_times and stamp <= self._sensor_times[-1]:
+                    self._sensor_times.clear()
+                self._sensor_times.append(stamp)
+                self._last_sensor_mono = time.monotonic()
+        except Exception:
+            # Optional instrumentation must not interrupt capture or invent FPS.
+            return
+
+    def stats(self):
+        with self._capture_lock:
+            times = list(self._sensor_times)
+            recent = self._last_sensor_mono is not None and 0 <= time.monotonic()-self._last_sensor_mono <= 2
+        fps = (1e9*(len(times)-1)/(times[-1]-times[0]) if recent and len(times)>1 and times[-1]>times[0] else None)
+        health = self.health()
+        return {**self.capture_settings, **self._buffer.stats(), "available": health.fresh(),
+                "reason": health.failure_reason, "capture_fps": None if fps is None else round(fps, 1),
+                "capture_fps_source": "SensorTimestamp cadence" if fps is not None else "unmeasured",
+                "provenance": health.provenance}
 
     def _frame_health(self, frame: CameraFrame | None) -> InputHealth:
         stamp = frame.captured_at if frame is not None else None
