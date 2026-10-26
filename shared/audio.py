@@ -8,6 +8,8 @@ import struct
 import subprocess
 import tempfile
 import wave
+from array import array
+import sys
 from collections.abc import Callable
 
 MAX_WAV_BYTES = 4 * 1024 * 1024
@@ -66,6 +68,31 @@ def sound_wav(name: str = "acknowledge") -> bytes:
         wav.setsampwidth(2)
         wav.setframerate(rate)
         wav.writeframes(samples)
+    return output.getvalue()
+
+
+def attenuate_wav(data: bytes, gain: float, *, peak_limit: float = .25) -> bytes:
+    """Attenuate PCM without changing mixers; never amplify or hard-clip speech."""
+    if type(gain) not in (int, float) or not math.isfinite(gain) or not 0 <= gain <= 1:
+        raise ValueError("output gain must be finite and between 0 and 1")
+    if not math.isfinite(peak_limit) or not 0 < peak_limit <= 1:
+        raise ValueError("peak limit must be between 0 and 1")
+    wav_duration(data)
+    with wave.open(io.BytesIO(data), "rb") as wav:
+        params = wav.getparams()
+        samples = array("h", wav.readframes(wav.getnframes()))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    peak = max((abs(sample) for sample in samples), default=0)
+    factor = min(gain, int(32767*peak_limit)/peak) if peak else gain
+    for index, sample in enumerate(samples):
+        samples[index] = int(sample*factor)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setparams(params)
+        wav.writeframes(samples.tobytes())
     return output.getvalue()
 
 

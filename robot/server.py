@@ -120,7 +120,9 @@ engine.battery_fn = battery_sensor.read_v if battery_sensor is not None else lam
 # Audio device (optional) — mic captured here + streamed to the brain (Whisper);
 # speaker plays local WAVs. Missing ALSA/device remains explicitly unavailable.
 mic = PiMic(rate=config.MIC_RATE, device=config.MIC_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
-speaker = PiSpeaker(device=config.SPEAKER_DEVICE, simulate=config.SIMULATE) if config.AUDIO_ENABLED else None
+speaker = PiSpeaker(device=config.SPEAKER_DEVICE, simulate=config.SIMULATE,
+                    backend=config.SPEAKER_BACKEND, verified_board=config.SPEAKER_VERIFIED_BOARD,
+                    expected_pin=config.SPEAKER_EXPECTED_PIN, gain=config.SPEAKER_GAIN) if config.AUDIO_ENABLED else None
 
 if mic is not None and speaker is not None:
     mic.suppress = speaker.suppressed
@@ -192,6 +194,10 @@ async def lifespan(_app: FastAPI):
     _home_on_start()
     yield
     await realtime_hub.close()
+    if speaker is not None:
+        cleanup = await asyncio.to_thread(speaker.close)
+        if not cleanup["ok"]:
+            logger.error("speaker shutdown: %s", cleanup["reason"])
     if camera is not None:
         camera.stop()
 
@@ -315,7 +321,7 @@ async def audio_play(request: Request) -> Response:
     result = await asyncio.to_thread(speaker.play_result, bytes(data), **envelope.model_dump(),
         authorize=lambda: leases.consume(request.headers.get(AUDIO_LEASE_HEADER),
                                          f"audio:{envelope.session_id}:{envelope.sequence}"))
-    return JSONResponse(status_code=200 if result.get("played") or result.get("simulate") else 503, content=result)
+    return JSONResponse(status_code=200 if result.get("ok") or result.get("simulate") else 503, content=result)
 
 
 class CompanionEvent(BaseModel):
