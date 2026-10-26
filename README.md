@@ -65,6 +65,9 @@ is emitted in explicit simulation. See [audio diagnosis](docs/audio-acceptance.m
 for the independent Pi I2S/ALSA, service account, direct playback, endpoint,
 network and Jetson TTS checks. A successful `aplay` exit still does not prove
 that a human heard sound.
+The [opt-in Robot HAT v4 profile](docs/robot-hat-speaker.md) requires explicit
+board/pin verification and routing, checks amplifier cleanup, and leaves system
+mixers/defaults unchanged. It remains separate from microphone acceptance.
 
 ## Reproducible development
 

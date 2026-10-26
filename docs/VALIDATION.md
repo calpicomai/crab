@@ -118,3 +118,17 @@ by default. Final quick validation passed 284 tests, off-body/nine scenarios and
 HTTP/virtual-body. The preceding full 283-test revision also passed live
 WebSocket greeting/priority stop/resume. Hardware/API compatibility and physical
 throughput remain unverified; tests use fake encoders and explicit simulation.
+
+## Robot HAT audio follow-up — 2026-10-26
+
+The explicit v4 profile passed 290 focused tests, including 17 HAT lifecycle
+checks using fake metadata/GPIO/processes; off-body checks, nine scenarios and
+the isolated HTTP/virtual-body portions passed. The final complete local smoke
+hit the separately recorded baseline resume/status ordering failure after its
+earlier checks passed. A prior audio iteration passed the full live smoke with
+289 tests. No stop/resume protections were weakened to change that outcome.
+Compileall, launcher shell syntax and diff whitespace checks passed.
+
+No live HAT integration, audible output, microphone capture or device setting was
+tested here. Owner-provided one-shot v4/2.5.3/GPIO/ALSA evidence is distinguished
+from application acceptance in the [profile contract and opt-in test guide](robot-hat-speaker.md).
