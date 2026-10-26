@@ -10,6 +10,11 @@ ignored `aplay`'s exit status, silently switched to simulation if ALSA was missi
 and accepted failed HTTP playback as success. Those defects are confirmed and
 fixed. They do **not** establish the cause of silence on the user's Pi.
 
+2026-10-26 follow-up: owner-provided v4/2.5.3, GPIO and `plug:softvol` one-shot
+evidence supports an explicit opt-in [Robot HAT speaker profile](robot-hat-speaker.md).
+Application hardware acceptance is still separate; generic output remains the
+default and runtime never changes global ALSA/Pulse settings.
+
 ## Official sources checked, 2026-10-22
 
 The SunFounder documentation host was inaccessible from this workspace, so its

@@ -114,6 +114,10 @@ AUDIO_ENABLED: bool = os.environ.get("PICRAWLER_AUDIO_ENABLED", "1").strip().low
 }
 MIC_DEVICE: str = os.environ.get("PICRAWLER_MIC_DEVICE", "")
 SPEAKER_DEVICE: str = os.environ.get("PICRAWLER_SPEAKER_DEVICE", "")
+SPEAKER_BACKEND: str = os.environ.get("PICRAWLER_SPEAKER_BACKEND", "alsa")
+SPEAKER_VERIFIED_BOARD: str = os.environ.get("PICRAWLER_SPEAKER_VERIFIED_BOARD", "")
+SPEAKER_EXPECTED_PIN: str = os.environ.get("PICRAWLER_SPEAKER_EXPECTED_PIN", "")
+SPEAKER_GAIN: str | None = os.environ.get("PICRAWLER_SPEAKER_GAIN")
 MIC_RATE: int = int(os.environ.get("PICRAWLER_MIC_RATE", "16000"))
 
 # --- Whole-robot simulator (robot/simworld.py) --------------------------------
