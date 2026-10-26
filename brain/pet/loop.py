@@ -13,6 +13,7 @@ import threading
 import time
 
 from shared import AUDIO_PLAY_PATH, AUDIO_STOP_PATH, AUDIO_STREAM_PATH
+from shared.clock import event_age
 from .. import config as brain_config
 from ..client import RobotClient
 from ..dashboard import Dashboard
@@ -51,6 +52,10 @@ class EventInbox:
         command = commands.interpret(event.get("text", ""))
         stamp = event.get("timestamp")
         valid_stamp = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp)
+        if event.get("_clock") is not None:
+            age = event_age(event)
+            valid_stamp = age is not None
+            stamp = time.time()-age if valid_stamp else None
         with self.lock:
             epoch = event.get("control_epoch")
             if type(epoch) is int and epoch >= 0:
@@ -59,7 +64,11 @@ class EventInbox:
                 if epoch > self.control_epoch:
                     self._discard_before_epoch_locked(epoch)
             if command and command.name in {"stop", "stay", "scold"}:
-                self.stop_after = max(self.stop_after, stamp if valid_stamp else time.time())
+                # The conservative mapped capture time is the EARLIEST possible
+                # local time. A stop barrier must fence the whole uncertainty
+                # interval, including buffered local microphone resumes.
+                barrier = time.time() if event.get("_clock") is not None or not valid_stamp else stamp
+                self.stop_after = max(self.stop_after, barrier)
                 self.urgent = event
                 # Old resume/social input must not undo a newer stop.
                 while not self.normal.empty():
@@ -257,7 +266,8 @@ def main(argv=None) -> int:
                     event = heard.get_nowait()
                 except queue.Empty:
                     break
-                if not 0 <= time.time()-event.get("timestamp", 0) <= 5:
+                age = event_age(event)
+                if age is None or age > 5:
                     continue
                 # Speaker output is never treated as fresh user engagement.
                 if event.get("source") == "microphone" and voice.listening_suppressed():
@@ -296,6 +306,7 @@ def main(argv=None) -> int:
             if now-last_publish >= 0.1:
                 state = coordinator.snapshot()
                 state.update(name=identity.name, character=identity.character, tick=tick,
+                             pi_clock=latest_status.get("_clock"),
                              simulate=bool(latest_status.get("simulate")), think_ms=think_ms,
                              pipeline=inputs.health() if hasattr(inputs, "health") else {},
                              publisher=dashboard.health() if hasattr(dashboard, "health") else {},

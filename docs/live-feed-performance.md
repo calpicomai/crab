@@ -16,10 +16,11 @@ age shown separately from transport and rendering.
 
 The Pi camera timestamp is set when the encoded JPEG reaches the frame buffer;
 the displayed camera age estimates **encoded-frame age**, not exposure-to-screen
-latency. Sensor exposure and JPEG encoding time precede that timestamp. Absolute
-source-age checks require synchronized Pi, Jetson and browser host wall clocks;
-receipt/performance clocks only track additional age after delivery and cannot
-prove time spent before receipt. Future or missing timestamps stay unknown.
+latency. Sensor exposure and JPEG encoding time precede that timestamp.
+Source-age checks use separately measured, bounded Pi–Jetson and Pi–browser
+clock intervals; monotonic elapsed time advances the conservative upper age.
+Future timestamps outside the interval or missing/expired calibration stay
+unknown. See [clock policy and validation limits](companion-clock.md).
 
 This changes delivery and visibility, not sensor freshness requirements or safety
 limits. Old captures keep their original timestamps. Slow inference can still be

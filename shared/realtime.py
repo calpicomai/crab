@@ -182,6 +182,9 @@ class ErrorMessage(Envelope):
 
 class PongMessage(RequestEnvelope):
     type: Literal["pong"] = "pong"
+    # Optional only for decoding an older peer: the new client fails closed
+    # without a measured clock. No control authority comes from this value.
+    server_at: float | None = Field(default=None, gt=0)
 
 
 ClientMessage = Annotated[Union[LeaseRequest, CommandRequest, PingRequest], Field(discriminator="type")]

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from shared.companion import Intent, IntentionName, IntentionStatus, MindOutput
 from shared.health import InputHealth, unavailable
+from shared.clock import capture_age
 
 from . import commands, expressions
 from .brain import THOUGHT_TTL_S
@@ -199,11 +200,11 @@ class Coordinator:
                           and type(epoch) is int and type(previous_epoch) is int
                           and epoch > previous_epoch)
         self._status = status
-        producer_age = self.wall_clock() - observed_at if self._number(observed_at) else None
+        producer_age = capture_age(observed_at, status.get("_clock"), wall=self.wall_clock(), mono=self.clock())
         # Receipt cannot refresh an old producer sample. Missing timestamps are
         # reported unavailable below; strict WS transport rejects them earlier.
-        self._status_at = self.clock() - producer_age if producer_age is not None and producer_age >= 0 else (
-            self.clock() if producer_age is None else None)
+        self._status_at = self.clock() - producer_age if producer_age is not None else (
+            self.clock() if observed_at is None and "_clock" not in status else None)
         if self.blocked_reason == "waiting for robot status":
             self.blocked_reason = ""
         boot = self._status.get("boot_id")
@@ -235,11 +236,12 @@ class Coordinator:
                        for name, raw in self._status.get("inputs", {}).items()}
         self.inputs["transport"] = InputHealth(available=producer_age is not None,
             provenance="real", captured_at=observed_at if self._number(observed_at) else None,
+            clock=status.get("_clock"),
             received_at=self.wall_clock(), max_age_s=2.0, source=self.transport_source,
             failure_reason="producer status timestamp unavailable" if producer_age is None else None,
             used=producer_age is not None and 0 <= producer_age <= 2,
             ignored_reason=None if producer_age is not None and 0 <= producer_age <= 2 else
-                "producer status timestamp missing, future or stale").snapshot(self.wall_clock())
+                "producer status timestamp missing, future or stale").snapshot(self.wall_clock(), mono=self.clock())
         for name in ("battery", "ultrasonic", "camera", "microphone", "interpretation"):
             self.inputs.setdefault(name, self._missing("no health metadata", source=name).snapshot(self.wall_clock()))
         for name in ("battery", "ultrasonic"):
@@ -262,12 +264,12 @@ class Coordinator:
                                                  if k in InputHealth.model_fields})
         except Exception:
             health = self._missing("invalid health metadata")
-        if health.usable(self.wall_clock(), allow_simulated=bool(self._status.get("simulate"))):
+        if health.usable(self.wall_clock(), mono=self.clock(), allow_simulated=bool(self._status.get("simulate"))):
             health.used, health.ignored_reason = used, None if used else why
         else:
             health.used = False
             health.ignored_reason = health.failure_reason or "stale, unavailable, or unsupported provenance"
-        return health.snapshot(self.wall_clock())
+        return health.snapshot(self.wall_clock(), mono=self.clock())
 
     def _missing(self, reason, *, source=""):
         health = unavailable(reason, source=source)
@@ -279,7 +281,7 @@ class Coordinator:
         try:
             health = InputHealth.model_validate({k: v for k, v in raw.items()
                                                  if k in InputHealth.model_fields})
-            return health.usable(self.wall_clock(), allow_simulated=bool(self._status.get("simulate")))
+            return health.usable(self.wall_clock(), mono=self.clock(), allow_simulated=bool(self._status.get("simulate")))
         except Exception:
             return False
 

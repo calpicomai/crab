@@ -44,7 +44,7 @@ class FakeConnection:
         self.push(StatusMessage(**self.ids(), sequence=sequence,
                                 control_epoch=self.control_epoch,
                                 status=RobotStatus(boot_id=self.boot_id,
-                                                   observed_at=time.time() if stamp is None else stamp)))
+                                                   observed_at=time.time()+self.server.clock_offset if stamp is None else stamp)))
 
     def __enter__(self):
         return self
@@ -75,7 +75,8 @@ class FakeConnection:
         if self.server.handler and self.server.handler(self, message):
             return
         if isinstance(message, PingRequest):
-            self.push(PongMessage(**self.ids(), request_id=message.request_id))
+            self.push(PongMessage(**self.ids(), request_id=message.request_id,
+                                  server_at=time.time()+self.server.clock_offset))
         elif isinstance(message, LeaseRequest):
             self.push(LeaseMessage(**self.ids(), request_id=message.request_id,
                                    control_epoch=message.control_epoch,
@@ -87,8 +88,9 @@ class FakeConnection:
 
 
 class FakeServer:
-    def __init__(self, handler=None, status_stamp=None):
+    def __init__(self, handler=None, status_stamp=None, clock_offset=0):
         self.handler, self.status_stamp = handler, status_stamp
+        self.clock_offset = clock_offset
         self.connections, self.sent, self.options = [], [], []
 
     def connect(self, uri, **kwargs):
@@ -295,15 +297,19 @@ class RealtimeClientTests(unittest.TestCase):
 
     def test_stop_fences_packet_waiting_behind_blocked_sender(self):
         blocked, release = threading.Event(), threading.Event()
+        calibrated = threading.Event()
         self.addCleanup(release.set)
         def handler(connection, message):
-            if isinstance(message, PingRequest) and not blocked.is_set():
+            if isinstance(message, PingRequest) and calibrated.is_set() and not blocked.is_set():
                 blocked.set()
                 release.wait(1)
             return False
         server = FakeServer(handler)
         link = self.link(server)
         self.assertTrue(link._ready.wait(1))
+        calibrated.set()
+        with link._lock:
+            link._next_ping = 0
         self.assertTrue(blocked.wait(1))
         thread, results = self.command_thread(link)
         self.until(lambda: link.health()["pending_requests"] == 1)
@@ -359,6 +365,43 @@ class RealtimeClientTests(unittest.TestCase):
         self.assertFalse(link.health()["ready"])
         self.assertTrue(all(status is None for status, _ in changes))
         self.assertIn("stale", changes[0][1])
+
+    def test_small_positive_pi_clock_skew_does_not_disconnect_status(self):
+        server = FakeServer(clock_offset=.030)
+        link = self.link(server)
+        self.assertTrue(link._ready.wait(.5), link.health())
+
+    def test_small_negative_pi_clock_skew_keeps_events_and_sensor_health(self):
+        events, statuses = [], []
+        server = FakeServer(clock_offset=-.030)
+        link = self.link(server, on_event=events.append, on_status=lambda s, r: statuses.append(s))
+        self.assertTrue(link._ready.wait(.5), link.health())
+        connection = server.connections[0]
+        connection.push(EventMessage(**connection.ids(), control_epoch=0, sequence=1,
+                                    event=InputEvent(text="resume", timestamp=time.time()-.030)))
+        self.until(lambda: bool(events))
+        self.assertIn("_clock", events[0])
+        self.assertIn("_clock", statuses[0])
+        self.assertLess(link.health()["status_capture_age_s"], .1)
+
+    def test_excessive_pi_skew_and_slow_clock_probe_never_become_ready(self):
+        for offset in (-.5, .5):
+            changes = []
+            link = self.link(FakeServer(clock_offset=offset),
+                             on_status=lambda s, r: changes.append((s, r)))
+            self.until(lambda: bool(changes))
+            self.assertFalse(link._ready.is_set())
+            self.assertIn("clock calibration", changes[0][1])
+            link.close()
+        def delayed(connection, message):
+            if isinstance(message, PingRequest):
+                time.sleep(.22)
+            return False
+        changes = []
+        link = self.link(FakeServer(delayed), on_status=lambda s, r: changes.append((s, r)))
+        self.until(lambda: bool(changes))
+        self.assertFalse(link._ready.is_set())
+        self.assertIn("uncertainty", changes[0][1])
 
     def test_redirects_and_nonlocal_destinations_are_rejected(self):
         with self.assertRaises(ValueError):

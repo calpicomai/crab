@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from brain.pet.inputs import InputWorker
+from shared.clock import CaptureClock
 
 
 class FakeLink:
@@ -106,6 +107,46 @@ class RealtimeInputsTests(unittest.TestCase):
         with self.assertRaises(queue.Empty):
             self.heard.get_nowait()
         self.assertEqual(self.link.closed, 1)
+
+    def test_skewed_typed_events_remain_fresh_without_rewriting_or_replaying_resume(self):
+        worker = self.make()
+        worker.start()
+        for offset in (.030, -.030):
+            wall, mono = time.time(), time.monotonic()
+            clock = CaptureClock(offset_lower_s=offset-.006, offset_upper_s=offset+.006,
+                                 wall_at=wall, mono_at=mono).model_dump()
+            stamp = wall+offset
+            worker._on_realtime_event({"text": "resume", "timestamp": stamp, "_clock": clock})
+            self.assertEqual(self.heard.get_nowait()["timestamp"], stamp)
+            worker._on_realtime_event({"text": "stop", "timestamp": stamp+.001, "_clock": clock})
+            self.assertEqual(self.heard.get_nowait()["text"], "stop")
+            worker._on_realtime_event({"text": "resume", "timestamp": stamp-.001, "_clock": clock})
+            with self.assertRaises(queue.Empty):
+                self.heard.get_nowait()
+            for bad_stamp in (stamp-6, stamp+6):
+                worker._on_realtime_event({"text": "resume", "timestamp": bad_stamp, "_clock": clock})
+            with self.assertRaises(queue.Empty):
+                self.heard.get_nowait()
+            self.heard.stop_after = float("-inf")  # independent offset case
+
+    def test_pi_stop_fences_older_local_microphone_resume_inside_clock_uncertainty(self):
+        worker = self.make()
+        worker.start()
+        clock = CaptureClock(offset_lower_s=.024, offset_upper_s=.036,
+                             wall_at=1000., mono_at=10.).model_dump()
+        with patch("brain.pet.loop.time.time", return_value=1000.010), \
+             patch("brain.pet.loop.time.monotonic", return_value=10.010):
+            self.link.on_event({"text": "stop", "timestamp": 1000.030, "_clock": clock, "control_epoch": 2})
+            self.assertEqual(self.heard.get_nowait()["text"], "stop")
+            # Its current epoch can be attached by the microphone callback after
+            # capture; that does not make its older local utterance post-stop.
+            self.heard.put_nowait({"text": "resume", "timestamp": 999.999,
+                                   "source": "microphone", "control_epoch": 2})
+            with self.assertRaises(queue.Empty):
+                self.heard.get_nowait()
+            self.heard.put_nowait({"text": "resume", "timestamp": 1000.011,
+                                   "source": "microphone", "control_epoch": 2})
+            self.assertEqual(self.heard.get_nowait()["text"], "resume")
 
     def test_new_epoch_drops_old_resume_but_keeps_fresh_engagement(self):
         worker = self.make()

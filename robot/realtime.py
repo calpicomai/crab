@@ -301,7 +301,8 @@ class RealtimeHub:
                     continue
                 if isinstance(request, PingRequest):
                     deadline = time.monotonic()+self.heartbeat_timeout_s
-                    self._ack(session, PongMessage(**session.envelope, request_id=request.request_id))
+                    self._ack(session, PongMessage(**session.envelope, request_id=request.request_id,
+                                                   server_at=time.time()))
                 elif isinstance(request, LeaseRequest):
                     with self._lock:
                         generation = session.generation

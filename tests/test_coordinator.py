@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from brain.pet.coordinator import Coordinator
 from brain.pet.mood import Mood
+from shared.clock import CaptureClock
 
 
 class Clock:
@@ -89,6 +90,26 @@ class CoordinatorTests(unittest.TestCase):
                   "distance_cm": 100.0, "inputs": {"battery": health, "ultrasonic": health}}
         status.update(overrides)
         self.c.observe(status)
+
+    def test_bounded_pi_clock_keeps_original_captures_and_no_echo_unavailable(self):
+        for offset in (.03, -.03):
+            anchor = CaptureClock.measure(1000.006+offset, 1000., 1000., 1000.012, 1000.012)
+            self.clock.now = 1000.012
+            health = {"available": True, "provenance": "real", "captured_at": 1000+offset,
+                      "clock": anchor.model_dump(), "max_age_s": 1.0}
+            # A fresh time cannot turn a missing echo into a healthy distance.
+            self.c._last_status_observed_at = None
+            self.observe(observed_at=1000+offset, _clock=anchor.model_dump(),
+                         inputs={"battery": health, "ultrasonic": {**health, "available": False,
+                                 "failure_reason": "no echo"}}, distance_cm=None)
+            state = self.c.snapshot()
+            self.assertTrue(state["inputs"]["battery"]["fresh"])
+            self.assertTrue(state["inputs"]["transport"]["fresh"])
+            self.assertFalse(state["inputs"]["ultrasonic"]["available"])
+            self.assertFalse(state["inputs"]["ultrasonic"]["used"])
+            self.assertEqual(state["inputs"]["battery"]["captured_at"], 1000+offset)
+            self.clock.now += 1.1
+            self.assertFalse(self.c.snapshot()["inputs"]["battery"]["fresh"])
 
     def advance(self, seconds):
         self.clock.now += seconds

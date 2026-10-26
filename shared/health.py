@@ -1,15 +1,15 @@
 """Health metadata shared by capture, transport and behavior.
 
-Timestamps are Unix seconds. Receipt never refreshes capture time; future
-timestamps are unusable until clocks agree. Values remain in typed payloads.
+Timestamps are Unix seconds. Receipt never refreshes capture time. A measured,
+bounded clock anchor may accompany remote capture timestamps.
 """
 from __future__ import annotations
 
-import math
 import time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from .clock import CaptureClock, capture_age
 
 
 class InputHealth(BaseModel):
@@ -18,6 +18,7 @@ class InputHealth(BaseModel):
     available: bool = False
     provenance: Literal["real", "simulated", "unknown"] = "unknown"
     captured_at: float | None = None
+    clock: CaptureClock | None = None
     received_at: float | None = None
     max_age_s: float = Field(default=2.0, gt=0, le=300)
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -26,22 +27,22 @@ class InputHealth(BaseModel):
     used: bool = False
     ignored_reason: str | None = "not consumed by behavior"
 
-    def fresh(self, now: float | None = None) -> bool:
+    def fresh(self, now: float | None = None, *, mono: float | None = None) -> bool:
         now = time.time() if now is None else now
-        return bool(self.available and self.captured_at is not None
-                    and math.isfinite(now)
-                    and 0 <= now - self.captured_at <= self.max_age_s)
+        age = capture_age(self.captured_at, self.clock, wall=now, mono=mono)
+        return bool(self.available and age is not None and age <= self.max_age_s)
 
-    def usable(self, now: float | None = None, *, allow_simulated: bool = False) -> bool:
-        return (self.fresh(now) and self.failure_reason is None
+    def usable(self, now: float | None = None, *, allow_simulated: bool = False, mono: float | None = None) -> bool:
+        return (self.fresh(now, mono=mono) and self.failure_reason is None
                 and (self.provenance == "real"
                      or (allow_simulated and self.provenance == "simulated")))
 
-    def snapshot(self, now: float | None = None) -> dict:
+    def snapshot(self, now: float | None = None, *, mono: float | None = None) -> dict:
         now = time.time() if now is None else now
         data = self.model_dump()
-        data.update(fresh=self.fresh(now),
-                    age_s=None if self.captured_at is None else round(now - self.captured_at, 3))
+        age = capture_age(self.captured_at, self.clock, wall=now, mono=mono)
+        data.update(fresh=self.fresh(now, mono=mono),
+                    age_s=None if age is None else round(age, 3))
         return data
 
 

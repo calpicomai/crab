@@ -23,6 +23,9 @@ generation. An event retains the generation in which it was created, so a resume
 already in transit before stop cannot acquire a fresh lease afterward. New status
 must not upgrade the authority of an old event. Input capture timestamps
 remain producer timestamps. Socket receipt never makes an old observation fresh.
+Request-correlated pongs now carry Pi time for bounded clock calibration; new
+clients fail closed if an older Pi omits it. Update both nodes together. See
+[capture timing policy and validation](companion-clock.md).
 
 Only one companion owns a session. A second connection is rejected without
 evicting the existing owner. Application pings have a correlated pong; a missing

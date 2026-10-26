@@ -14,6 +14,7 @@ import time
 import httpx
 
 from shared import COMPANION_EVENTS_PATH
+from shared.clock import event_age
 from shared.local import require_local_url
 from ..client import RobotClient
 
@@ -116,9 +117,8 @@ class InputWorker:
     def _on_realtime_event(self, event):
         if self.stop_event.is_set():
             return
-        stamp = event.get("timestamp")
-        if not (isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
-                and math.isfinite(stamp) and 0 <= time.time()-stamp <= 5
+        age = event_age(event)
+        if not (age is not None and age <= 5
                 and isinstance(event.get("text"), str)):
             return
         with self._lock:
