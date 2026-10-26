@@ -149,7 +149,8 @@ stamp provenance and explicit bitrate/quality reporting. Both real Chromium
 suites passed: +30 ms browser clock, stale/reconnect, desktop/mobile, disabled
 and failure states, persistent STOP, deliberate Resume and bounded slow decode.
 The hardware profile fixture explicitly distinguishes a bitrate target from JPEG
-quality; it is synthetic, not hardware acceleration evidence.
+quality and verifies simulated hardware requests still report the applied Pillow
+JPEG quality. These are synthetic cases, not hardware acceleration evidence.
 
 The initial combined full local run passed unit, off-body, nine scenarios and
 HTTP/virtual-body portions, then reproduced the previously recorded baseline

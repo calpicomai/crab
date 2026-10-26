@@ -76,7 +76,7 @@ window.refreshFixture=()=>{
     provenance:sim?'simulated':'real',failure_reason:reason,ignored_reason:used?null:'not used by stationary behavior'});
   const host=(name,cpu,memory,temp)=>({host:name,captured_at:now,age_s:.1,cpu_percent:cpu,memory_used_mib:memory,memory_total_mib:name==='pi'?3900:7800,temperature_c:temp,rss_mib:120,source:'synthetic host fixture'});
   s.host_vitals=host('pi',22,740,45);
-  if(fixtureHardware)Object.assign(s.camera_capture,{encoder_requested:'mjpeg_hw',encoder:'V4L2 MJPEG · synthetic capability fixture',requested_bitrate_bps:4000000,quality_applied:false,hardware_benchmark_verified:false});
+  if(fixtureHardware)Object.assign(s.camera_capture,{encoder_requested:'mjpeg_hw',encoder:fixtureHardware==='simulated'?'Pillow synthetic; hardware profile not applied':'V4L2 MJPEG · synthetic capability fixture',requested_bitrate_bps:4000000,quality_applied:fixtureHardware==='simulated',hardware_benchmark_verified:false});
   s.brain={name:'Crab',mode:'interaction',simulate:sim,episode:{phase:'listen'},stopped:fixtureStopped,motion_enabled:false,
     blocked_reason:fixtureStopped?'User requested stop · explicit fresh resume required':'',mood:'curious',battery_v:7.42,distance_cm:74,
     last_say:'Hello. I’m here.',character:'Generated, saved identity narrative · not a live observation.',
@@ -150,6 +150,9 @@ def main():
             cdp.value("fixtureHardware=true;refreshFixture();true")
             cdp.wait("document.querySelector('#camera-config').textContent.includes('4.00 Mbps target') && document.querySelector('#camera-config').textContent.includes('JPEG quality not applied')")
             report["hardware_bitrate_distinct_from_jpeg_quality"] = True
+            cdp.value("fixtureHardware='simulated';refreshFixture();true")
+            cdp.wait("document.querySelector('#camera-config').textContent.includes('Pillow synthetic') && document.querySelector('#camera-config').textContent.includes('JPEG quality 80') && !document.querySelector('#camera-config').textContent.includes('Mbps target')")
+            report["simulation_reports_applied_jpeg_quality"] = True
             cdp.value("fixtureHardware=false;refreshFixture();true")
             cdp.value("seedGraphs();true")
             screenshot("real-connected-desktop.png")

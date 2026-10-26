@@ -9,6 +9,7 @@
     "disconnected-desktop.png"
   ],
   "hardware_bitrate_distinct_from_jpeg_quality": true,
+  "simulation_reports_applied_jpeg_quality": true,
   "native_no_upscale": true,
   "stop_visible_in_expanded_camera": true,
   "resume_requires_confirmation": true,
