@@ -110,3 +110,11 @@ The complete `bash test_sim.sh` failed the live explicit-resume assertion after
 its earlier portions passed. An unchanged `b505086` baseline reproduced the same
 resume/control-epoch ordering failure. This follow-up does not claim a green full
 smoke or physical acceptance, and does not repair sonar or audio.
+
+## Mission-control follow-up — 2026-10-26
+
+See [dashboard metrics, camera timing, validation limits and read-only probe](mission-control.md).
+The final focused suite passed 287 tests and off-body/nine scenarios. Browser
+fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
+errors. The earlier full run hit the reproduced baseline explicit-resume race;
+no physical acceptance is claimed.

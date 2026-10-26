@@ -52,6 +52,7 @@ from shared.realtime import WS_PATH, MAX_MESSAGE_BYTES
 from .control import CommandLeases
 from .realtime import RealtimeHub
 from .telemetry import TelemetryStore
+from shared.vitals import SystemVitals
 from . import config
 from .audio import PiMic, PiSpeaker
 from .camera import PiCamera
@@ -60,6 +61,7 @@ from .sensors import BatterySensor, DistanceSensor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("picrawler.server")
+_host_vitals = SystemVitals("pi")
 leases = CommandLeases()
 command_lock = threading.Lock()
 # This short lock orders STOP against lease consumption + latch clearing for
@@ -218,7 +220,7 @@ def health() -> dict[str, object]:
         "hardware_verified": False,
         "motion": status.motion_state,
         "inputs": {name: item.snapshot() for name, item in status.inputs.items()},
-        "camera_capture": camera.capture_settings if camera is not None else {"available": False},
+        "camera_capture": camera.stats() if camera is not None else {"available": False},
         "audio": audio_health(),
         "realtime": realtime_hub.health(),
         "limitations": ["no measured odometry or joint feedback", "no cliff guarantee",
@@ -400,7 +402,7 @@ class ControlBody(BaseModel):
 @app.get("/sim")
 def sim_dashboard() -> Response:
     # Served even without the sim world: on the real robot the page degrades to the
-    # brain telemetry pushed to /sim/brain (camera + costmap + pet panels), so you
+    # brain telemetry pushed to /sim/brain (camera, vitals and companion panels), so you
     # can watch the live pet at /sim. The top-down map is the only sim-only panel.
     from .sim_view import DASHBOARD_HTML
 
@@ -414,6 +416,9 @@ def _dashboard_state() -> dict:
              **(sim_world.state() if sim_world is not None else {}),
              "brain": brain, "revision": revision, "server_at": now, "server_boot_id": leases.boot_id,
              "telemetry_age_ms": None if not brain else round(max(0, now-brain["_received_at"])*1000, 1)}
+    state.update(host_vitals=_host_vitals.snapshot(),
+                 robot_runtime={"simulate": engine.simulate, "motion": engine.motion_state()},
+                 camera_capture=camera.stats() if camera is not None else {"available": False, "reason": "camera disabled"})
     return state
 
 
@@ -426,7 +431,7 @@ async def _dashboard_events(request: Request):
     # No per-viewer event queue or historical replay. Slow readers resume with
     # the newest snapshot after backpressure clears. Browser rendering is bounded too.
     while not await request.is_disconnected():
-        state = _dashboard_state()
+        state = await asyncio.to_thread(_dashboard_state)
         yield "event: state\ndata: " + json.dumps(state, separators=(",", ":"), allow_nan=False) + "\n\n"
         await asyncio.sleep(0.1)
 
