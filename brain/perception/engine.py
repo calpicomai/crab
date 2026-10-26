@@ -5,9 +5,8 @@ runs every loaded backend, and concatenates their detections (each tagged with
 its source) into one PerceptionSnapshot. Backends load/unload independently so
 the Jetson can reclaim a detector's RAM for the LLM/Whisper/Piper later.
 
-Simulate: if PERCEPTION_SIMULATE is set, or a configured real backend fails to
-import, or the camera can't open, the engine runs on synthetic frames and/or a
-DummyBackend and reports simulate=True (mirrors GaitEngine's fallback).
+Simulation requires explicit configuration. A failed detector/camera remains
+unavailable; an empty detection list never asserts free space.
 """
 
 from __future__ import annotations
@@ -16,6 +15,8 @@ import logging
 import time
 
 import numpy as np
+
+from shared.health import InputHealth, unavailable
 
 from . import backends, config
 from .camera import MjpegCamera
@@ -30,6 +31,7 @@ class PerceptionEngine:
         self._backends: dict[str, backends.DetectorBackend] = {}
         self._frame_id = 0
         self.last_frame: np.ndarray | None = None  # most recent frame (for annotation)
+        self._backend_failures: dict[str, str] = {}
 
         self.camera = MjpegCamera(
             url=config.CAMERA_URL,
@@ -47,9 +49,6 @@ class PerceptionEngine:
         else:
             for name in wanted:
                 self.load(name)
-            if not self._backends:
-                logger.warning("no detector backends loaded; falling back to dummy")
-                self._load_dummy()
 
     # ----------------------------------------------------------------- #
     # Backend management
@@ -63,7 +62,7 @@ class PerceptionEngine:
         self._backends = {dummy.name: dummy}
 
     def load(self, name: str) -> None:
-        """Load a backend by name. On failure, log and (if nothing else is loaded) fall back to dummy."""
+        """Load a backend by name; failure is visible without synthetic replacement."""
         name = name.strip().lower()
         if name in self._backends:
             return
@@ -71,11 +70,11 @@ class PerceptionEngine:
             backend = backends.build(name)
             backend.load()
             self._backends[name] = backend
+            self._backend_failures.pop(name, None)
             logger.info("loaded backend %r", name)
         except Exception as exc:  # noqa: BLE001 - missing libs / engine / weights
             logger.warning("could not load backend %r (%s)", name, exc)
-            if not self._backends:
-                self._load_dummy()
+            self._backend_failures[name] = str(exc)[:300]
 
     def unload(self, name: str) -> None:
         name = name.strip().lower()
@@ -101,18 +100,37 @@ class PerceptionEngine:
     # Perception
     # ----------------------------------------------------------------- #
     def detect(self) -> PerceptionSnapshot:
-        frame = self.camera.read()
+        frame, camera_health, _capture_sequence = self.camera.read_snapshot()
         self.last_frame = frame
-        height, width = frame.shape[:2]
+        height, width = frame.shape[:2] if frame is not None else (self.camera.height, self.camera.width)
 
         t0 = time.monotonic()
         detections = []
-        for backend in self._backends.values():
-            detections.extend(backend.detect(frame))
+        successful = []
+        failures = dict(self._backend_failures)
+        if frame is not None:
+            for backend in self._backends.values():
+                try:
+                    detections.extend(backend.detect(frame))
+                    successful.append(backend.name)
+                except Exception as exc:
+                    failures[backend.name] = str(exc)[:300]
         # TODO: optional cross-backend NMS to merge YOLO/NanoOWL duplicates.
         latency_ms = round((time.monotonic() - t0) * 1000, 1)
 
         self._frame_id += 1
+        if frame is None:
+            interpretation = unavailable("no fresh captured image", source="perception")
+        elif not successful:
+            interpretation = unavailable("no detector output: " + str(failures)[:240], source="perception")
+        else:
+            simulated = camera_health.provenance == "simulated" or all(name in {"dummy", "simblob"} for name in successful)
+            interpretation = InputHealth(available=True, provenance="simulated" if simulated else camera_health.provenance,
+                                          captured_at=camera_health.captured_at, received_at=time.time(), max_age_s=2,
+                                          source=",".join(successful))
+        inputs = {"camera": camera_health, "interpretation": interpretation}
+        for name, reason in failures.items():
+            inputs[f"detector:{name}"] = unavailable(reason, source=name)
         return PerceptionSnapshot(
             frame_id=self._frame_id,
             width=width,
@@ -120,9 +138,10 @@ class PerceptionEngine:
             detections=detections,
             backends=self.loaded_backends(),
             # Effective: forced simulate, or the camera is still on synthetic frames.
-            simulate=self.simulate or self.camera.simulate,
+            simulate=self.simulate or camera_health.provenance == "simulated" or interpretation.provenance == "simulated",
             latency_ms=latency_ms,
             prompts=self.prompts,
+            inputs=inputs,
         )
 
     def close(self) -> None:

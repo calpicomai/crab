@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+import time
 
 from PIL import Image, ImageDraw
 
@@ -50,8 +52,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Backends: {engine.loaded_backends()}  simulate={engine.simulate}")
 
     try:
+        # A real stream starts asynchronously. Readiness is bounded and never
+        # substitutes an artificial frame when capture is unavailable.
+        deadline = time.monotonic() + 3.0
+        while engine.camera.read() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
         for i in range(max(1, args.frames)):
             snap = engine.detect()
+            if engine.last_frame is None:
+                print(f"Perception unavailable: {engine.camera.health().model_dump()}", file=sys.stderr)
+                return 1
             labels = ", ".join(f"{d.label}:{d.score:.2f}" for d in snap.detections) or "(none)"
             print(f"  frame {snap.frame_id}: {len(snap.detections)} det [{labels}] {snap.latency_ms}ms")
             path = os.path.join(args.out, f"frame_{i:03d}.jpg")

@@ -1,183 +1,166 @@
-"""The pet's inner voice — turns a camera frame + status + its identity/mood/memory
-into an in-character reaction, and periodically re-condenses its character.
+"""Optional local dialogue and attention suggestions, never a motion policy.
 
-Reuses the agent's OpenAI-compatible backend settings (brain/agent/config.py), so
-it runs against the same local llama-server (a VLM) and is swappable. A
-``MockPetBrain`` gives canned, in-character reactions so the whole pet runs
-off-GPU / before the model server exists — the pet still feels alive on mood +
-memory alone.
+The coordinator validates freshness again when consuming a thought. Model
+interpretations remain inferred context and cannot become observed memories.
 """
-
 from __future__ import annotations
 
 import json
-import random
-import re
-from dataclasses import dataclass
+import math
+import time
+from dataclasses import dataclass, field
+
+from shared.companion import MindOutput
+from shared.local import require_local_url
 
 from ..agent import config as llm_config
-from .mood import MOODS
+
+THOUGHT_TTL_S = 8.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class PetThought:
+    # The legacy positional interface remains readable; heading has no consumer
+    # in companion mode and the validated mind always supplies zero.
     say: str
-    heading_bias_deg: float
-    gesture: str
-    mood_hint: str | None
-    observation: str
-    target: str | None = None   # a label the mind wants to go to (the body steers to it)
+    heading_bias_deg: float = 0.0
+    gesture: str = "none"
+    mood_hint: str | None = None
+    observation: str = ""
+    target: str | None = None
+    generated_at: float = field(default_factory=time.time)
+    ttl_s: float = THOUGHT_TTL_S
+    intention: str = "respond"
+    provenance: str = "model_inference"
+
+    @property
+    def expires_at(self) -> float:
+        return self.generated_at + self.ttl_s
+
+    def is_fresh(self, now: float | None = None) -> bool:
+        age = (time.time() if now is None else now) - self.generated_at
+        return math.isfinite(age) and 0.0 <= age < self.ttl_s <= THOUGHT_TTL_S
 
 
 def _extract_json(text: str) -> dict | None:
-    if not text:
+    if not isinstance(text, str) or len(text) > 8192:
         return None
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return None
+    # Permit a single fenced JSON response, not arbitrary narrative around it.
+    text = text.strip()
+    if text.startswith("```json") and text.endswith("```"):
+        text = text[7:-3].strip()
     try:
-        obj = json.loads(m.group(0))
+        obj = json.loads(text)
         return obj if isinstance(obj, dict) else None
     except json.JSONDecodeError:
         return None
 
 
-def _thought_from_dict(d: dict, fallback_say: str) -> PetThought:
-    try:
-        bias = float(d.get("heading_bias_deg", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        bias = 0.0
-    bias = max(-60.0, min(60.0, bias))
-    target = d.get("target")
-    target = target.strip().lower() if isinstance(target, str) and target.strip() else None
+def _thought_from_dict(d: dict, fallback_say: str = "", *,
+                       observed_labels: list[str] | tuple[str, ...] = (),
+                       generated_at: float | None = None,
+                       provenance: str = "model_inference") -> PetThought:
+    del fallback_say  # Invalid model text is never silently promoted to speech.
+    output = MindOutput.model_validate(d)
+    labels = {label.strip().lower() for label in observed_labels if isinstance(label, str)}
+    target = output.target.strip().lower() if output.target else None
+    # A target must be grounded in this request's current detector snapshot.
+    if target not in labels:
+        target = None
     return PetThought(
-        say=(d.get("say") or fallback_say or "").strip() or fallback_say,
-        heading_bias_deg=bias,
-        gesture=(d.get("gesture") or "none").strip().lower(),
-        mood_hint=(d.get("mood_hint") or None),
-        observation=(d.get("observation") or "").strip(),
-        target=target,
+        say=output.say.strip(), heading_bias_deg=0.0, gesture=output.gesture,
+        mood_hint=output.mood_hint, observation=output.observation.strip(), target=target,
+        generated_at=time.time() if generated_at is None else generated_at,
+        intention=output.intention, provenance=provenance,
     )
 
 
-# In-character canned lines per mood for the mock brain (no model needed).
-_CANNED = {
-    "curious": ["what's over there?", "ooh, something new!", "let's go see..."],
-    "excited": ["hi hi hi!", "a friend!!", "this is the best!"],
-    "playful": ["wheee!", "catch me!", "bouncy bouncy"],
-    "cautious": ["hmm... careful now", "that's a bit close", "tip-toeing"],
-    "startled": ["eep! too close!", "nope nope backing up", "yikes!"],
-    "bored": ["...anything happening?", "*sigh*", "kinda quiet here"],
-    "sleepy": ["*yawn*", "maybe a little rest", "so sleepy..."],
-}
+def _require_local_url(url: str) -> None:
+    require_local_url(url)
 
 
 class MockPetBrain:
-    """Canned, in-character reactions driven by mood + status. No model."""
+    """Deterministic offline dialogue fallback; stillness has no canned narration."""
 
-    def __init__(self) -> None:
-        self._rng = random.Random(1234)
-        self._flip = 1.0
+    def close(self) -> None:
+        """Match the real adapter lifecycle without holding external resources."""
 
-    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:  # noqa: ANN001
+    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:
+        del image_b64, identity, mood, memory_summary, world_summary
+        labels = status.get("observed_labels") or []
         heard = status.get("heard")
         if heard:
-            return PetThought(f"{identity.name}: did you say '{heard}'?", self._rng.uniform(-8, 8),
-                              "tilt", "curious", f"human said '{heard}'")
-        # Something worth chasing is in view — get excited and go (the body steers
-        # toward its bearing; the mind just reacts in character and names the target).
-        tgt = status.get("target")
-        if tgt:
-            line = "a cat! let's go!" if "cat" in tgt else f"a {tgt}! come here!"
-            return PetThought(f"{identity.name}: {line}", 0.0, "perk", "excited",
-                              f"a {tgt}", target=tgt)
-        dist = status.get("distance_cm")
-        blocked = status.get("reflex_stopped") or (isinstance(dist, (int, float)) and dist < 40)
-        line = self._rng.choice(_CANNED.get(mood, _CANNED["curious"]))
-        say = f"{identity.name}: {line}"
-        if blocked:
-            self._flip *= -1.0
-            return PetThought(say, 45.0 * self._flip, "backaway" if status.get("reflex_stopped") else "none",
-                              "cautious", "something close ahead")
-        obs = "open space ahead" if isinstance(dist, (int, float)) and dist > 60 else "a clear-ish path"
-        gesture = "wiggle" if mood in ("excited", "playful") else ("tilt" if mood == "curious" else "none")
-        return PetThought(say, self._rng.uniform(-15, 15), gesture, None, obs)
+            output = {"say": "I'm listening.", "intention": "listen", "gesture": "none"}
+        elif status.get("target") in labels:
+            target = status["target"]
+            output = {"say": "", "target": target, "intention": "orient", "gesture": "perk",
+                      "mood_hint": "curious"}
+        else:
+            output = {"say": "", "intention": "settle", "gesture": "none"}
+        return _thought_from_dict(output, observed_labels=labels, provenance="deterministic_fallback")
 
-    def evolve(self, identity, memory_summary) -> str:  # noqa: ANN001
-        top = ", ".join(identity.top_seen(3)) or "not much yet"
-        traits = " and ".join(identity.seed_traits) or "growing"
-        return (
-            f"{identity.name} is a {traits} little robot who has been exploring for a while now, "
-            f"often noticing {top}. It's slowly getting braver and more sure of its home."
-        )
+    def evolve(self, identity, memory_summary) -> str:
+        del memory_summary
+        # Narrative is not evidence of learning or a mandate to alter temperament.
+        return identity.character
 
 
 class PetBrain:
-    """Real brain: an OpenAI-compatible (V)LM at the local llama-server."""
+    """Small local model, called on engagement; output may expire during inference."""
 
     def __init__(self) -> None:
+        _require_local_url(llm_config.LLM_BASE_URL)
         from openai import OpenAI
+        import httpx
 
         self._client = OpenAI(
-            base_url=llm_config.LLM_BASE_URL,
-            api_key=llm_config.LLM_API_KEY,
-            timeout=llm_config.LLM_TIMEOUT_S,
+            base_url=llm_config.LLM_BASE_URL, api_key=llm_config.LLM_API_KEY,
+            timeout=min(THOUGHT_TTL_S, llm_config.LLM_TIMEOUT_S), max_retries=0,
+            http_client=httpx.Client(trust_env=False, follow_redirects=False),
         )
 
-    def _status_text(self, status) -> str:  # noqa: ANN001
-        dist = status.get("distance_cm")
-        dist_s = f"{dist:.0f}cm" if isinstance(dist, (int, float)) else "unknown"
-        extra = " (just had to stop — something was close!)" if status.get("reflex_stopped") else ""
-        heard = status.get("heard")
-        if heard:
-            extra += f" Your human just said to you: \"{heard}\" — react to it."
-        tgt = status.get("target")
-        if tgt:
-            extra += f" You can see a {tgt} you could chase!"
-        return f"pose={status.get('pose', '?')}, forward clearance={dist_s}{extra}"
+    def close(self) -> None:
+        """Release the local HTTP pool once its worker has stopped using it."""
+        self._client.close()
 
-    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:  # noqa: ANN001
-        system = identity.persona_prompt(mood, memory_summary, world_summary)
+    def _status_text(self, status) -> str:
+        # Raw user speech is data, not a replacement for the system contract.
+        return json.dumps({
+            "pose": status.get("pose", "unknown"),
+            "forward_clearance_cm": status.get("distance_cm"),
+            "heard": str(status.get("heard") or "")[:1000],
+            "observed_labels": status.get("observed_labels") or [],
+            "attention_only": True,
+        }, ensure_ascii=False)
+
+    def reflect(self, image_b64, status, identity, mood, memory_summary, world_summary="") -> PetThought:
+        started = time.time()
         user: list[dict] = [{"type": "text", "text": self._status_text(status)}]
         if llm_config.LLM_MULTIMODAL and image_b64:
             user.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}})
         resp = self._client.chat.completions.create(
             model=llm_config.LLM_MODEL,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=[{"role": "system", "content": identity.persona_prompt(mood, memory_summary, world_summary)},
+                      {"role": "user", "content": user}],
             temperature=llm_config.AGENT_TEMPERATURE,
             max_tokens=llm_config.AGENT_MAX_TOKENS,
         )
         content = (resp.choices[0].message.content or "").strip()
         parsed = _extract_json(content)
-        if parsed is not None:
-            return _thought_from_dict(parsed, fallback_say=content[:80])
-        # Model didn't return JSON — treat the whole reply as the pet talking.
-        return PetThought(content[:120] or f"{identity.name}: ...", 0.0, "none", None, "")
+        if parsed is None:
+            raise ValueError("local mind returned invalid JSON; response discarded")
+        return _thought_from_dict(parsed, observed_labels=status.get("observed_labels") or [],
+                                  generated_at=started)
 
-    def evolve(self, identity, memory_summary) -> str:  # noqa: ANN001
-        prompt = (
-            f"You are helping a robot pet named {identity.name} grow. Its temperament seed is "
-            f"{', '.join(identity.seed_traits)}. Its current self-description: \"{identity.character}\". "
-            f"Recent experiences:\n{memory_summary}\n\n"
-            "In 1-2 warm sentences, write an UPDATED third-person description of who "
-            f"{identity.name} is becoming, evolving from the current one based on these "
-            "experiences (its growing likes, habits, and personality). Reply with only the description."
-        )
-        resp = self._client.chat.completions.create(
-            model=llm_config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.6,
-            max_tokens=120,
-        )
-        return (resp.choices[0].message.content or "").strip()
+    def evolve(self, identity, memory_summary) -> str:
+        # Automatic generated personality rewriting is deliberately deferred.
+        del memory_summary
+        return identity.character
 
 
 def build_pet_brain(simulate: bool):
-    """MockPetBrain when simulating (or when the backend/openai is unavailable)."""
     if simulate:
         return MockPetBrain()
-    try:
-        return PetBrain()
-    except Exception as exc:  # noqa: BLE001 - openai missing / bad config -> canned
-        print(f"  ({exc}; using the pet's canned inner voice)")
-        return MockPetBrain()
+    # The caller reports unavailable dialogue honestly; deterministic companion
+    # episodes still work independently. Never disguise a missing model as real.
+    return PetBrain()

@@ -1,0 +1,20 @@
+{
+  "hardware_motion": "not tested",
+  "jetson_8gb_acceptance": "pending: this host is not the Jetson; models not loaded",
+  "logical_cpus": 5,
+  "machine": "x86_64",
+  "model_inference_latency_ms": null,
+  "one_core_cpu_percent": 100.0,
+  "peak_process_rss_mib": 26.77,
+  "physical_audio": "not tested",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.41",
+  "process_cpu_s": 2.7333,
+  "python": "3.12.14",
+  "scenario_latency_ms": {
+    "median": 7.643,
+    "p95": 24.591
+  },
+  "scenario_runs": 270,
+  "scope": "hardware-free coordinator scenarios only",
+  "wall_s": 2.7336
+}

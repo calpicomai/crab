@@ -1,91 +1,33 @@
-# AGENTS.md — guidance for AI agents working in this repo
+# Agent guidance
 
-Read `CLAUDE.md` first for architecture decisions and constraints that are already
-made — follow them, do not substitute alternatives.
+Read `CLAUDE.md`, the current implementation and `docs/COMPANION_PLAN.md` before
+changing behavior. Prior documentation mixed implemented, simulated and hardware
+verified claims; use dated evidence and tests, not those old claims.
 
-## Cursor Cloud specific instructions
+This cloud workspace has no Pi/Jetson hardware. All actuator tests must use
+explicit simulation or fakes. Missing vendor libraries must never enable
+simulation implicitly or synthesize healthy data on a real deployment.
 
-Cloud VMs have **no Raspberry Pi or Jetson hardware**. All development and testing
-here runs in **simulate mode**:
-
-- **Virtual body (`SimWorld`)** — enable with `PICRAWLER_SIM_WORLD=1`. A 2D room
-  with pose, obstacles, ray-cast sonar, and a rendered camera. Walk/turn move the
-  robot in the world so wander/pet/agent can navigate for real (kinematic, not
-  servo physics). Live dashboard at **http://localhost:8000/sim**.
-- Robot: `PICRAWLER_SIMULATE=1` (auto-detected when `picrawler`/`robot_hat` missing)
-- Brain loops: `--sim` on pet/agent; perception uses the **dummy** backend (or
-  **`simblob`** when pointed at the sim-world camera stream)
-
-### Setup
-
-Dependencies install automatically via `.cursor/setup-cloud.sh` (also run manually):
+From repository root, existing environments are `robot/.venv` and `brain/.venv`:
 
 ```bash
-bash .cursor/setup-cloud.sh
+bash test_sim.sh --unit
+bash test_sim.sh
+bash sim.sh room
+brain/.venv/bin/python -m brain.pet.scenarios --all --summary
 ```
 
-Do **not** run `brain/setup_perception.sh`, `brain/setup_agent.sh`, or
-`brain/setup_voice.sh` in cloud — they require Jetson CUDA, Ollama, or Piper
-binaries.
+The full smoke test binds an isolated loopback port and uses temporary memories.
+In sandboxed execution, asyncio/ASGI and localhost tests may need network
+permission even when no external connection is made. Do not weaken tests for
+that environment limitation. No API keys/cloud services are needed.
 
-### Run from repo root
+Do not run Jetson setup/model/driver/power scripts in cloud. Do not send commands
+to a configured LAN robot. Hardware acceptance, audio playback, calibration,
+installation, power changes and reboot require explicit authorization. Preserve
+vendor calibration and existing configuration/memory through backups.
 
-Both venvs expect the repo root as cwd so `import shared` resolves:
-
-- `robot/.venv` — Pi command server + gait (simulate)
-- `brain/.venv` — client, wander, pet, agent, perception server
-
-### Automated smoke test (CI / cloud)
-
-Run the non-interactive test suite after setup — exits 0 on success:
-
-```bash
-bash test_sim.sh --unit      # in-code only (~2s): costmap, worldmodel, mock brains
-bash test_sim.sh             # full stack incl. SimWorld virtual body (~30s)
-bash test_sim.sh --quick     # skip pet/agent HTTP loops
-```
-
-**Off-body / in-code** (`--unit` or `python -m brain.test_offbody`) tests brain
-logic with no robot server and no SimWorld — mock LLM policies, costmap, world
-model, dummy perception. Use this to iterate on the "mind" without the virtual
-body.
-
-**With virtual body** (`test_sim.sh` without `--unit`, or `bash sim.sh`) runs
-SimWorld so walk/turn change pose and sonar/camera see obstacles.
-
-### Interactive emulator (virtual body)
-
-`sim.sh` starts the **SimWorld** virtual body + pet in one command:
-
-```bash
-bash sim.sh poles            # scenarios: poles / room / corridor / slalom
-# → http://localhost:8000/sim  (click map to drop obstacles)
-```
-
-Scenarios place poles, walls, and boxes; the pet's body loop navigates with the
-same costmap + reflex stack as on hardware.
-
-Or step by step:
-
-```bash
-PICRAWLER_SIMULATE=1 PICRAWLER_SIM_WORLD=1 robot/.venv/bin/python -m robot.server &
-sleep 2
-curl -fsS http://localhost:8000/health
-brain/.venv/bin/python -m brain.test_movement --base-url http://localhost:8000
-brain/.venv/bin/python -m brain.pet --sim --duration 10 --base-url http://localhost:8000
-brain/.venv/bin/python -m brain.agent.loop --sim --max-ticks 3 --base-url http://localhost:8000
-```
-
-Open **http://localhost:8000/sim** when the sim-world server is running with
-`--dashboard` on the pet/agent loop.
-
-For camera→costmap fusion in sim, run perception with the simblob backend:
-
-```bash
-PERCEPTION_BACKENDS=simblob PERCEPTION_CAMERA_URL=http://localhost:8000/camera/stream \
-  brain/.venv/bin/python -m brain.perception.server
-```
-
-### Secrets
-
-This project is fully local — simulate mode needs **no API keys or cloud secrets**.
+Main seams: canonical protocol/health/companion/speech in `shared/`, bounded
+motion in `robot/gait.py`, one intention owner in `brain/pet/coordinator.py`,
+nonblocking integration in `brain/pet/loop.py`. Legacy navigation is simulation
+only. New companion work must not reintroduce hidden motion or perpetual roaming.

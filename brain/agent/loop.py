@@ -104,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     max_ticks = 1 if args.once else args.max_ticks
 
     client = RobotClient(base_url=args.base_url)
+    if not client.health().get("simulate", False):
+        client.close()
+        print("Legacy navigation is simulation-only pending motion/result migration. Use brain.pet.")
+        return 2
     # Pull frames from the SAME robot we command (honors --base-url), not the
     # static config default.
     frame_url = client.base_url.rstrip("/") + CAMERA_FRAME_PATH

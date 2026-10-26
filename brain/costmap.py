@@ -31,6 +31,10 @@ Pure Python / numpy-free so it runs and is testable anywhere. Self-test:
 from __future__ import annotations
 
 import math
+import time
+
+from pydantic import ValidationError
+from shared.health import InputHealth
 
 from . import config
 
@@ -80,6 +84,7 @@ class LocalCostmap:
 
         self.conf = [0.0] * self.bins
         self.range = [self.max_range] * self.bins
+        self.camera_use = {"used": False, "ignored_reason": "no camera observation"}
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -125,30 +130,48 @@ class LocalCostmap:
             if abs(center) <= half:
                 self._write(idx, conf, distance_cm)
 
-    def integrate_camera(self, snapshot: dict) -> None:
+    def integrate_camera(self, snapshot: dict, *, allow_simulated: bool = False,
+                         now: float | None = None) -> bool:
         """Write each detection as an arc from its box's left edge to its right
         edge, at a bearing from the pixel x-center and a coarse range from box
         size. Consumes the perception ``/snapshot`` JSON (PerceptionSnapshot).
 
-        Fabricated perception is ignored so it can't create phantom obstacles: a
-        ``simulate`` snapshot carries synthetic frames (no real obstacle info),
-        and the ``dummy`` backend emits a constant centered "person" every frame —
-        fusing either permanently blocks the forward arc and makes the robot spin
-        in circles. A real camera + real detector (yolo/nanoowl) and the sim-world
-        ``simblob`` backend (simulate:false) still fuse normally."""
-        if snapshot.get("simulate"):
-            return
+        Both capture and interpretation require fresh health metadata. Simulation
+        is an explicit caller context; dummy detections are always ignored. Missing
+        evidence contributes no occupancy and is never proof of clear space.
+        """
+        self.camera_use = {"used": False, "ignored_reason": "missing camera health metadata"}
+        now = time.time() if now is None else now
+        for name in ("camera", "interpretation"):
+            try:
+                health = InputHealth.model_validate(snapshot.get("inputs", {}).get(name, {}))
+            except (ValidationError, TypeError, AttributeError):
+                self.camera_use["ignored_reason"] = f"invalid {name} health metadata"
+                return False
+            if not health.usable(now, allow_simulated=allow_simulated):
+                self.camera_use["ignored_reason"] = f"{name}: unavailable, stale, unknown or disallowed provenance"
+                return False
+        if snapshot.get("simulate") and not allow_simulated:
+            self.camera_use["ignored_reason"] = "simulation requires explicit caller opt-in"
+            return False
         width = snapshot.get("width") or 0
         height = snapshot.get("height") or 0
-        if not width or not height:
-            return
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+                   for value in (width, height)):
+            self.camera_use["ignored_reason"] = "invalid image dimensions"
+            return False
+        self.camera_use = {"used": False, "ignored_reason": "no usable obstacle detections; empty image is not free-space evidence"}
         for det in snapshot.get("detections", []):
-            if det.get("source") == "dummy":
+            if det.get("source") == "dummy" or (det.get("source") == "simblob" and not allow_simulated):
                 continue
             box = det.get("box")
             if not box or len(box) != 4:
                 continue
             x1, y1, x2, y2 = box
+            if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in box):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
             # Coarse proximity, no depth: a nearer obstacle is large in at least
             # one dimension, so use the max of its width/height fraction — this
             # (unlike area) keeps a thin-but-close thing (a pole) reading as near.
@@ -158,6 +181,7 @@ class LocalCostmap:
             conf = self._conf_from_range(est_range) * _CAMERA_WEIGHT
             if conf <= 0:
                 continue
+            self.camera_use = {"used": True, "ignored_reason": None}
             bearing_l = ((x1 / width) - 0.5) * self.camera_hfov
             bearing_r = ((x2 / width) - 0.5) * self.camera_hfov
             lo, hi = min(bearing_l, bearing_r), max(bearing_l, bearing_r)
@@ -170,6 +194,7 @@ class LocalCostmap:
             for idx, center in enumerate(self._centers):
                 if lo <= center <= hi:
                     self._write(idx, conf, est_range)
+        return self.camera_use["used"]
 
     # ------------------------------------------------------------------ #
     # Memory: decay + dead-reckoning
@@ -285,6 +310,7 @@ class LocalCostmap:
             "heading": round(heading, 1),
             "forward_clear": forward_clear,
             "min_gap": round(self.min_gap, 1),
+            "camera_use": dict(self.camera_use),
         }
 
     def render_ascii(self) -> str:
@@ -309,10 +335,12 @@ class LocalCostmap:
 
 def _self_test() -> int:
     """Feed synthetic scenes and print the histogram + chosen heading."""
+    fixture_health = InputHealth(available=True, provenance="simulated", captured_at=time.time()).model_dump()
+    inputs = {"camera": fixture_health, "interpretation": fixture_health}
     print("clear scene (sonar 100cm, no detections):")
     cm = LocalCostmap()
     cm.integrate_sonar(100.0)
-    cm.integrate_camera({"width": 640, "height": 480, "detections": []})
+    cm.integrate_camera({"width": 640, "height": 480, "detections": [], "inputs": inputs}, allow_simulated=True)
     print("  ", cm.render_ascii())
     h, fwd = cm.best_heading()
     assert fwd, "clear scene should be forward-clear"
@@ -331,8 +359,9 @@ def _self_test() -> int:
     cm.integrate_sonar(None)  # no echo — narrow beam missed the thin pole
     cm.integrate_camera({
         "width": 640, "height": 480,
+        "inputs": inputs,
         "detections": [{"label": "a pole", "score": 0.6, "box": [40, 100, 120, 460], "source": "nanoowl"}],
-    })
+    }, allow_simulated=True)
     print("  ", cm.render_ascii())
     h, fwd = cm.best_heading()
     assert h > 0, "pole on the left -> steer right"
@@ -341,8 +370,9 @@ def _self_test() -> int:
     cm = LocalCostmap()
     cm.integrate_camera({
         "width": 640, "height": 480,
+        "inputs": inputs,
         "detections": [{"label": "x", "score": 0.9, "box": [0, 100, 80, 460], "source": "nanoowl"}],
-    })
+    }, allow_simulated=True)
     before = cm.render_ascii()
     cm.apply_motion(turn_deg=30.0)
     print("   before:", before)

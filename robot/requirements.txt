@@ -4,13 +4,15 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
+# Match the tested local WebSocket protocol runtime on both nodes.
+websockets>=15,<18
 # Pillow: encodes synthetic camera frames off-hardware (real capture uses the
 # system picamera2 encoder). Lightweight; safe to pip on the Pi.
 Pillow>=10.0
 
 # Hardware libraries — provided by the system on the Pi (an isolated venv can't
 # see them, so robot/setup.sh creates the venv with --system-site-packages).
-# The GaitEngine / PiCamera fall back to simulate mode when they can't import.
+# Missing hardware libraries remain unavailable; simulation must be explicit.
 #   - robot_hat, picrawler: SunFounder installer (servos/gait)
 #   - picamera2: CSI camera on Raspberry Pi OS Bookworm
 #       usually preinstalled; else: sudo apt install -y python3-picamera2

@@ -44,4 +44,4 @@ cat <<EOF
 =========================================================
 EOF
 
-ROBOT_HOST=localhost "$PY" -m brain.pet --base-url http://localhost:8000 --sim --dashboard ${@+"$@"}
+ROBOT_HOST=localhost "$PY" -m brain.pet --base-url http://localhost:8000 --sim --dashboard --body-expressions --no-stt ${@+"$@"}

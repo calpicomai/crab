@@ -1,118 +1,121 @@
-"""Ultrasonic distance sensor on the Pi (SunFounder robot_hat).
+"""Pi adapters: missing or failed real hardware is unknown, never clear.
 
-Reads forward clearance in cm. The brain's wander/avoid loop consumes this via
-get_status to decide when to turn away from obstacles.
-
-Mirrors the GaitEngine simulate philosophy: if robot_hat isn't importable (dev
-laptop, CI) or the sensor is disabled, it returns a synthetic "clear" distance so
-the whole autonomy loop runs off-hardware.
+Only explicit simulation permits generated values. The stock forward sonar is
+not collision or cliff protection. Battery conversion belongs to the vendor.
 """
-
 from __future__ import annotations
 
 import logging
+import math
+import time
 
+from shared.health import InputHealth, unavailable
 from . import config
 
 logger = logging.getLogger("picrawler.sensors")
 
-# Guarded hardware import. Missing off-Pi -> simulate.
-try:  # pragma: no cover - depends on deploy target
+try:  # pragma: no cover - deploy target dependent
     from robot_hat import Pin, Ultrasonic
-
     _ULTRASONIC_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001
-    Pin = None  # type: ignore[assignment,misc]
-    Ultrasonic = None  # type: ignore[assignment,misc]
+except Exception as exc:
+    Pin = Ultrasonic = None
     _ULTRASONIC_AVAILABLE = False
-    logger.info("robot_hat Ultrasonic unavailable (%s); DistanceSensor will simulate", exc)
+    logger.info("Ultrasonic unavailable: %s", exc)
 
-# Synthetic clearance reported in simulate mode (cm). Comfortably clear so the
-# wander loop walks; tests raise the avoid threshold to exercise the turn branch.
 _SIMULATED_CM = 80.0
-# Synthetic battery voltage in simulate mode — a healthy 2S pack, so off-hardware
-# runs never trip the brain's low-battery slowdown.
 _SIMULATED_BATTERY_V = 7.6
 
 
 class DistanceSensor:
-    """Forward-facing ultrasonic rangefinder. read_cm() -> distance or None."""
-
     def __init__(self, trig: str = "D2", echo: str = "D3", simulate: bool = False) -> None:
-        self.simulate: bool = bool(simulate) or not _ULTRASONIC_AVAILABLE
+        self.simulate = bool(simulate)
         self._sonar = None
-        # Optional 2D sim world (robot/simworld.py). When set, simulate returns the
-        # real ray-cast clearance from the world instead of a flat synthetic value.
         self.world = None
-        if self.simulate:
-            logger.warning("DistanceSensor running in SIMULATE mode — synthetic distance")
-        else:  # pragma: no cover - requires hardware
-            self._sonar = Ultrasonic(Pin(trig), Pin(echo))
-            logger.info("Ultrasonic sensor on trig=%s echo=%s", trig, echo)
+        self._health = unavailable("no sample yet", source="ultrasonic",
+                                   provenance="simulated" if self.simulate else "real")
+        if not self.simulate:
+            if not _ULTRASONIC_AVAILABLE:
+                self._health.failure_reason = "robot_hat Ultrasonic unavailable"
+            else:
+                try:
+                    self._sonar = Ultrasonic(Pin(trig), Pin(echo))
+                except Exception as exc:
+                    self._health.failure_reason = f"ultrasonic initialization failed: {exc}"[:300]
+
+    def health(self) -> InputHealth:
+        return self._health.model_copy(deep=True)
 
     def read_cm(self) -> float | None:
-        """Latest clearance in cm. None means no echo (treat as clear/unknown)."""
-        if self.simulate or self._sonar is None:
-            if self.world is not None:
-                return self.world.sonar()
-            return _SIMULATED_CM
-        try:  # pragma: no cover - hardware
-            # Fewer ping retries -> lower worst-case latency (see config).
-            try:
-                distance = self._sonar.read(config.ULTRASONIC_PINGS)
-            except TypeError:  # older robot_hat: read() takes no args
-                distance = self._sonar.read()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ultrasonic read failed: %s", exc)
+        try:
+            if self.simulate:
+                distance = self.world.sonar() if self.world is not None else _SIMULATED_CM
+            elif self._sonar is None:
+                self._health.available = False
+                self._health.ignored_reason = self._health.failure_reason
+                return None
+            else:
+                try:
+                    distance = self._sonar.read(config.ULTRASONIC_PINGS)
+                except TypeError:
+                    distance = self._sonar.read()
+            distance = float(distance)
+            if not math.isfinite(distance) or distance <= 0:
+                raise ValueError("no valid ultrasonic echo")
+        except Exception as exc:
+            self._health = unavailable(f"ultrasonic read failed: {exc}", source="ultrasonic",
+                                       provenance="simulated" if self.simulate else "real")
             return None
-        # robot_hat returns -1/-2 (or <=0) on timeout / no echo.
-        if distance is None or distance <= 0:
-            return None
-        return float(distance)
+        now = time.time()
+        self._health = InputHealth(available=True, provenance="simulated" if self.simulate else "real",
+                                   captured_at=now, received_at=now, source="ultrasonic", max_age_s=1)
+        return distance
 
 
 class BatterySensor:
-    """Robot HAT battery voltage. read_v() -> volts or None.
+    """Use the installed vendor getter; never guess scaling on a different board.
 
-    Guarded/best-effort (we don't assume a specific robot_hat version): prefer the
-    library's own battery reading if present, else an ADC channel scaled by ``scale``,
-    else simulate a healthy pack. Any read error -> None (never raises)."""
-
+    ``channel`` and ``scale`` remain accepted for config compatibility but do not
+    override the vendor conversion. Compare its reading with the actual pack
+    before hardware acceptance.
+    """
     def __init__(self, channel: str = "A4", scale: float = 3.0, simulate: bool = False) -> None:
-        self.simulate: bool = bool(simulate) or not _ULTRASONIC_AVAILABLE  # robot_hat present?
-        self.scale = float(scale)
-        self._get_v = None   # robot_hat.get_battery_voltage, if available
-        self._adc = None     # fallback ADC on `channel`
+        self.simulate = bool(simulate)
+        self._get_v = None
+        self._health = unavailable("no sample yet", source="battery",
+                                   provenance="simulated" if self.simulate else "real")
         if self.simulate:
-            logger.warning("BatterySensor running in SIMULATE mode — synthetic voltage")
             return
-        try:  # pragma: no cover - requires hardware
-            import robot_hat  # noqa: PLC0415
+        try:
+            import robot_hat
+            self._get_v = getattr(robot_hat, "get_battery_voltage", None)
+            if not callable(self._get_v):
+                from robot_hat.device import get_battery_voltage
+                self._get_v = get_battery_voltage
+            if not callable(self._get_v):
+                raise RuntimeError("vendor battery getter unavailable")
+        except Exception as exc:
+            self._health.failure_reason = f"battery unavailable: {exc}"[:300]
+            self._health.ignored_reason = self._health.failure_reason
 
-            if hasattr(robot_hat, "get_battery_voltage"):
-                self._get_v = robot_hat.get_battery_voltage
-                logger.info("Battery via robot_hat.get_battery_voltage")
-            else:
-                from robot_hat import ADC  # noqa: PLC0415
-
-                self._adc = ADC(channel)
-                logger.info("Battery via ADC(%s) x%.2f", channel, self.scale)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("battery sensor unavailable (%s); simulating", exc)
-            self.simulate = True
+    def health(self) -> InputHealth:
+        return self._health.model_copy(deep=True)
 
     def read_v(self) -> float | None:
-        """Latest pack voltage in volts, or None if unreadable."""
-        if self.simulate:
-            return _SIMULATED_BATTERY_V
-        try:  # pragma: no cover - hardware
-            if self._get_v is not None:
-                v = float(self._get_v())
-            elif hasattr(self._adc, "read_voltage"):
-                v = float(self._adc.read_voltage()) * self.scale
+        try:
+            if self.simulate:
+                voltage = _SIMULATED_BATTERY_V
+            elif self._get_v is None:
+                self._health.available = False
+                return None
             else:
-                v = (float(self._adc.read()) / 4095.0 * 3.3) * self.scale
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("battery read failed: %s", exc)
+                voltage = float(self._get_v())
+            if not math.isfinite(voltage) or not 0 < voltage <= 9:
+                raise ValueError("invalid 2S battery voltage")
+        except Exception as exc:
+            self._health = unavailable(f"battery read failed: {exc}", source="battery",
+                                       provenance="simulated" if self.simulate else "real")
             return None
-        return round(v, 2) if v and v > 0 else None
+        now = time.time()
+        self._health = InputHealth(available=True, provenance="simulated" if self.simulate else "real",
+                                   captured_at=now, received_at=now, max_age_s=5, source="battery")
+        return round(voltage, 2)
