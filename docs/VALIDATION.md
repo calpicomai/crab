@@ -111,22 +111,6 @@ its earlier portions passed. An unchanged `b505086` baseline reproduced the same
 resume/control-epoch ordering failure. This follow-up does not claim a green full
 smoke or physical acceptance, and does not repair sonar or audio.
 
-## Opt-in camera encoder follow-up — 2026-10-26
-
-The [explicit hardware MJPEG profile](camera-encoding.md) retains software JPEG
-by default. Final quick validation passed 284 tests, off-body/nine scenarios and
-HTTP/virtual-body. The preceding full 283-test revision also passed live
-WebSocket greeting/priority stop/resume. Hardware/API compatibility and physical
-throughput remain unverified; tests use fake encoders and explicit simulation.
-
-## Mission-control follow-up — 2026-10-26
-
-See [dashboard metrics, camera timing, validation limits and read-only probe](mission-control.md).
-The final focused suite passed 287 tests and off-body/nine scenarios. Browser
-fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
-errors. The earlier full run hit the reproduced baseline explicit-resume race;
-no physical acceptance is claimed.
-
 ## Robot HAT audio follow-up — 2026-10-26
 
 The explicit v4 profile passed 290 focused tests, including 17 HAT lifecycle
@@ -149,3 +133,30 @@ fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
 errors. The earlier full run hit the reproduced baseline explicit-resume race;
 no physical acceptance is claimed.
 
+## Opt-in camera encoder follow-up — 2026-10-26
+
+The [explicit hardware MJPEG profile](camera-encoding.md) retains software JPEG
+by default. Final quick validation passed 284 tests, off-body/nine scenarios and
+HTTP/virtual-body. The preceding full 283-test revision also passed live
+WebSocket greeting/priority stop/resume. Hardware/API compatibility and physical
+throughput remain unverified; tests use fake encoders and explicit simulation.
+
+## Combined audio/dashboard/camera integration — 2026-10-26
+
+The combined tree passed 318 tests, including a new fake-hardware regression that
+checks V4L2 selection retains SensorTimestamp cadence, OV5647 metadata, encoded
+stamp provenance and explicit bitrate/quality reporting. Both real Chromium
+suites passed: +30 ms browser clock, stale/reconnect, desktop/mobile, disabled
+and failure states, persistent STOP, deliberate Resume and bounded slow decode.
+The hardware profile fixture explicitly distinguishes a bitrate target from JPEG
+quality; it is synthetic, not hardware acceleration evidence.
+
+The initial combined full local run passed unit, off-body, nine scenarios and
+HTTP/virtual-body portions, then reproduced the previously recorded baseline
+explicit-resume/status-generation race. This caveat remains; no latch, freshness
+or safety test was weakened. Final integrated PR and main CI are reported with
+their exact commits. No hardware, audio, microphone, camera, model or physical
+performance acceptance is claimed.
+
+[Combined browser state report](evidence/combined-browser.json),
+[combined live-feed report](evidence/combined-live-feed.json).
