@@ -119,6 +119,14 @@ HTTP/virtual-body. The preceding full 283-test revision also passed live
 WebSocket greeting/priority stop/resume. Hardware/API compatibility and physical
 throughput remain unverified; tests use fake encoders and explicit simulation.
 
+## Mission-control follow-up — 2026-10-26
+
+See [dashboard metrics, camera timing, validation limits and read-only probe](mission-control.md).
+The final focused suite passed 287 tests and off-body/nine scenarios. Browser
+fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
+errors. The earlier full run hit the reproduced baseline explicit-resume race;
+no physical acceptance is claimed.
+
 ## Robot HAT audio follow-up — 2026-10-26
 
 The explicit v4 profile passed 290 focused tests, including 17 HAT lifecycle
@@ -140,3 +148,4 @@ The final focused suite passed 287 tests and off-body/nine scenarios. Browser
 fixtures passed with desktop/mobile, disabled/failure/stale states and no JS
 errors. The earlier full run hit the reproduced baseline explicit-resume race;
 no physical acceptance is claimed.
+
