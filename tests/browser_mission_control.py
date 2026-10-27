@@ -92,7 +92,7 @@ window.refreshFixture=()=>{
       {kind:'listen',status:'active',source:'episode',created_at:now-2,reason:'Open a bounded listening window',result:{reason:'Awaiting explicit engagement'}}]};
   if(fixtureFailure){s.brain.inputs.battery.available=false;s.brain.battery_v=null;cameraReason='Synthetic camera transfer failure';}
   s.telemetry_age_ms=5;s.sourceAgeAtReceipt=stampAge(s.brain._produced_at_pi_lower);
-  latestState=s;stateReceivedAt=perf;streamConnected=true;stateMessages++;
+  latestState=s;streamConnected=true;stateMessages++;
 };
 window.fixtureTick=setInterval(refreshFixture,100);refreshFixture();
 window.seedGraphs=()=>{graphHistory.length=0;const now=performance.now();for(let i=0;i<=120;i++){
@@ -195,7 +195,7 @@ def main():
             cdp.wait("document.querySelector('#input-result').textContent.includes('STOP unconfirmed')")
             report["stop_failure_honest"] = True
             cdp.value("clearInterval(fixtureTick);pauseFeeds();latestState.receivedPerf-=10000;latestState.sourceAgeAtReceipt+=10000;true")
-            cdp.wait("document.querySelector('#feed-state').textContent.includes('reconnecting') && document.querySelector('#resume-review').disabled")
+            cdp.wait("!streamConnected && document.querySelector('#feed-state').textContent.includes('disconnected') && document.querySelector('#resume-review').disabled")
             cdp.call("Emulation.setDeviceMetricsOverride", {"width": 1440, "height": 1050, "deviceScaleFactor": 1, "mobile": False})
             screenshot("disconnected-desktop.png")
             report["stale_resume_disabled"] = True

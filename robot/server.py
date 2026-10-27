@@ -52,7 +52,7 @@ from shared.realtime import WS_PATH, MAX_MESSAGE_BYTES
 from .control import CommandLeases
 from .realtime import RealtimeHub
 from .telemetry import TelemetryStore
-from shared.vitals import SystemVitals
+from shared.vitals import VitalsSampler
 from . import config
 from .audio import PiMic, PiSpeaker
 from .camera import PiCamera
@@ -61,7 +61,7 @@ from .sensors import BatterySensor, DistanceSensor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("picrawler.server")
-_host_vitals = SystemVitals("pi")
+_host_vitals = VitalsSampler("pi")
 leases = CommandLeases()
 command_lock = threading.Lock()
 # This short lock orders STOP against lease consumption + latch clearing for
@@ -193,17 +193,25 @@ def _home_on_start() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    if camera is not None:
-        camera.start()
-    _home_on_start()
-    yield
-    await realtime_hub.close()
-    if speaker is not None:
-        cleanup = await asyncio.to_thread(speaker.close)
-        if not cleanup["ok"]:
-            logger.error("speaker shutdown: %s", cleanup["reason"])
-    if camera is not None:
-        camera.stop()
+    _host_vitals.start()
+    try:
+        if camera is not None:
+            camera.start()
+        _home_on_start()
+        yield
+    finally:
+        try:
+            await realtime_hub.close()
+            if speaker is not None:
+                cleanup = await asyncio.to_thread(speaker.close)
+                if not cleanup["ok"]:
+                    logger.error("speaker shutdown: %s", cleanup["reason"])
+        finally:
+            try:
+                if camera is not None:
+                    camera.stop()
+            finally:
+                _host_vitals.close()
 
 
 app = FastAPI(title="PiCrawler Robot Server", version="0.1.0", lifespan=lifespan)
@@ -433,6 +441,14 @@ def _dashboard_state() -> dict:
 @app.get("/sim/state")
 def sim_state() -> Response:
     return JSONResponse(_dashboard_state(), headers={"Cache-Control": "no-store"})
+
+
+@app.get("/sim/clock")
+def sim_clock() -> Response:
+    # Calibration must not wait for host metrics, camera statistics or telemetry
+    # copying/serialization. This route grants no control session or authority.
+    return JSONResponse({"server_at": time.time(), "server_boot_id": leases.boot_id},
+                        headers={"Cache-Control": "no-store"})
 
 
 async def _dashboard_events(request: Request):

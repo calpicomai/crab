@@ -5,15 +5,16 @@
 <header class="safety-bar">
   <div class="brand"><span class="brand-mark" aria-hidden="true">C<span>·</span></span><div><span class="eyebrow">CRAB / OPERATIONS</span><h1 id="petname">Crab</h1></div></div>
   <div class="safety-state"><span id="provenance" class="badge neutral">SOURCE UNKNOWN</span><span id="motion-status" class="badge neutral">MOTION UNKNOWN</span><span id="feed-state" class="connection">connecting…</span></div>
-  <div class="safety-controls"><button id="resume-review" class="button secondary">Review resume</button><button id="stop-control" class="button stop" data-stop><span aria-hidden="true">■</span> STOP</button></div>
+  <div class="safety-controls"><button id="resume-review" class="button secondary" disabled aria-describedby="blocked">Review resume</button><button id="stop-control" class="button stop" data-stop><span aria-hidden="true">■</span> STOP</button></div>
 </header>
 <div id="resume-confirm" class="resume-confirm" hidden><div><strong>Clear the software stop latch?</strong><p>This does not enable actuators or start movement. Check the area and connection first.</p></div><button id="resume-confirm-button" class="button">Send fresh resume</button><button id="resume-cancel" class="button secondary">Cancel</button></div>
 <main>
+  <div id="runtime-alert" class="runtime-alert warning" role="status" aria-live="polite" hidden></div>
   <section class="operation-strip" aria-label="Current operation">
     <div><span class="eyebrow">COMPANION STATE</span><strong id="episode">Waiting for companion</strong><p id="blocked">Start the companion to see current intent and results.</p></div>
     <div class="strip-stat"><span>Pi transport</span><strong id="pi-link">Unknown</strong><small id="pi-link-detail">No status yet</small></div>
     <div class="strip-stat"><span>Jetson companion</span><strong id="jetson-link">Unknown</strong><small id="jetson-link-detail">No telemetry yet</small></div>
-    <div class="strip-stat"><span>Clock offset / uncertainty</span><strong id="clock-value">Unmeasured</strong><small id="clock-detail">Calibration required</small></div>
+    <div class="strip-stat"><span>Clock domains</span><strong id="clock-value">Unmeasured</strong><small id="clock-detail">Pi–Jetson bounds not received</small><small id="browser-clock-detail">Browser–Pi: calibrating</small></div>
   </section>
   <div class="operations-grid">
     <section id="camera-panel" class="panel camera-panel" aria-labelledby="camera-heading">
@@ -48,6 +49,6 @@
   </section>
   <section aria-labelledby="systems-heading"><div class="section-heading"><div><span class="eyebrow">SENSORS / SERVICES</span><h2 id="systems-heading">Available, used, verified</h2></div><span id="evidence" class="muted">Hardware acceptance remains separate.</span></div><div id="system-cards" class="systems-grid"></div></section>
   <details id="simulator" class="panel simulation" hidden><summary>Explicit simulator · idealized world</summary><p class="muted">Kinematic simulation only. This map is not available on the stationary physical robot and does not establish measured position.</p><div class="sim-controls"><button class="button quiet" data-world="pause">Pause world</button><button class="button quiet" data-world="resume">Resume world</button><button class="button quiet" data-world="reset">Reset world</button></div><canvas id="map" width="600" height="600" aria-label="Explicit simulated world"></canvas></details>
-  <details id="diagnostics" class="panel diagnostics"><summary>Diagnostics · timestamps, raw health & logs</summary><p id="feed-stats" class="muted">Waiting for transport diagnostics.</p><p class="muted">Saved narrative is generated identity text, not current perception or learning.</p><p id="saved-narrative"></p><table><thead><tr><th>Input</th><th>Availability / age</th><th>Current use / reason</th></tr></thead><tbody id="inputs"></tbody></table><pre id="intentions"></pre><pre id="audio-health"></pre><pre id="raw-state"></pre></details>
+  <details id="diagnostics" class="panel diagnostics"><summary>Diagnostics · timestamps, raw health & logs</summary><p id="feed-stats" class="muted">Waiting for transport diagnostics.</p><p class="muted">Saved narrative is generated identity text, not current perception or learning.</p><p id="saved-narrative"></p><table><thead><tr><th>Input</th><th>Availability / age</th><th>Current use / reason</th></tr></thead><tbody id="inputs"></tbody></table><pre id="frontend-health"></pre><pre id="intentions"></pre><pre id="audio-health"></pre><pre id="raw-state"></pre></details>
   <footer>Local operations only · software stop acts at vendor boundaries · keep a physical cutoff accessible</footer>
 </main><script>__SCRIPT__</script></body></html>

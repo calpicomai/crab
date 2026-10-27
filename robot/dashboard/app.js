@@ -3,8 +3,11 @@ const $=id=>document.getElementById(id);
 let W=300,H=300,battHist=[];
 // Keep one latest state and one camera request/decode in flight. Neither path
 // queues historical frames; hidden tabs release their streams and connections.
-let latestState=null, stateStream=null, stateReceivedAt=0, streamConnected=false;
-let stateMessages=0, stateHz=0, cameraFrames=0, cameraHz=0, metricStart=performance.now();
+let latestState=null,observedState=null,stateStream=null,streamConnected=false;
+let stateReconnectTimer=null;
+let stateObservedAt=0,stateObservedMessages=0,stateRejected=0,stateReason="Waiting for a Pi state sample";
+let clockReason="Waiting for browser–Pi calibration",clockProbeResult=null,renderError=null;
+let stateMessages=0,stateHz=0,cameraFrames=0,cameraHz=0,metricStart=performance.now(),metricsReady=false;
 let cameraAbort=null, cameraTimer=null, cameraRunning=false, cameraURL=null;
 let cameraSequence=null, cameraReceivedAt=0, cameraAgeAtReceipt=0, cameraRTT=null;
 let cameraCapturedAt=null;
@@ -31,14 +34,15 @@ function stampAge(stamp){
 }
 function measureClock(state,wall,perf){
   const end=performance.now(),elapsed=end-perf,now=Date.now();
-  if(!nonnegative(elapsed)||elapsed>CLOCK_MAX_RTT_MS||Math.abs(now-wall-elapsed)>CLOCK_WALL_STEP_MS||
-     typeof state.server_at!=="number"||!Number.isFinite(state.server_at)||state.server_at<=0||
-     typeof state.server_boot_id!=="string"||!state.server_boot_id)throw Error("invalid clock probe");
+  if(!nonnegative(elapsed)||elapsed>CLOCK_MAX_RTT_MS)throw Error(`Clock probe round trip ${Math.round(elapsed)} ms exceeds ${CLOCK_MAX_RTT_MS} ms bound`);
+  if(Math.abs(now-wall-elapsed)>CLOCK_WALL_STEP_MS)throw Error("Browser wall clock stepped during calibration");
+  if(typeof state.server_at!=="number"||!Number.isFinite(state.server_at)||state.server_at<=0||
+     typeof state.server_boot_id!=="string"||!state.server_boot_id)throw Error("Pi clock reply is malformed");
   const lower=state.server_at*1000-(wall+elapsed),upper=state.server_at*1000-wall;
-  if(lower < -CLOCK_MAX_OFFSET_MS||upper > CLOCK_MAX_OFFSET_MS)throw Error("clock offset exceeds bound");
+  if(lower < -CLOCK_MAX_OFFSET_MS||upper > CLOCK_MAX_OFFSET_MS)throw Error(`Browser–Pi offset [${lower.toFixed(1)}, ${upper.toFixed(1)}] ms exceeds ±${CLOCK_MAX_OFFSET_MS} ms bound`);
   const previous=remoteBounds();
   if(clockAnchor&&clockAnchor.boot===state.server_boot_id&&
-     (!previous||wall+elapsed+lower>previous[1]||wall+elapsed+upper<previous[0]))throw Error("clock stepped");
+     (!previous||wall+elapsed+lower>previous[1]||wall+elapsed+upper<previous[0]))throw Error("Pi or browser wall clock stepped between probes");
   clockAnchor={wall:wall+elapsed,perf:end,lower,upper,boot:state.server_boot_id};
 }
 async function probeClock(){
@@ -48,11 +52,17 @@ async function probeClock(){
   const generation=clockGeneration,wall=Date.now(),perf=performance.now();
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),1000);
   try{
-    const response=await fetch("/sim/state",{cache:"no-store",signal:controller.signal});
-    if(!response.ok)throw Error("clock HTTP failure");
+    const response=await fetch("/sim/clock",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw Error(`Pi clock HTTP ${response.status}; check matching server/dashboard versions`);
     const state=await response.json();
-    if(generation===clockGeneration)measureClock(state,wall,perf);
-  }catch(e){if(generation===clockGeneration)clockAnchor=null;}
+    if(!state||typeof state!=="object"||Array.isArray(state))throw Error("Pi clock reply is malformed");
+    if(generation===clockGeneration){
+      const elapsed=performance.now()-perf;
+      clockProbeResult={rtt_ms:elapsed,offset_lower_ms:typeof state.server_at==="number"?state.server_at*1000-wall-elapsed:null,
+        offset_upper_ms:typeof state.server_at==="number"?state.server_at*1000-wall:null,at:performance.now()};
+      measureClock(state,wall,perf);clockReason="Browser–Pi clock calibrated";
+    }
+  }catch(e){if(generation===clockGeneration){clockAnchor=null;clockReason=e.name==="AbortError"?"Pi clock probe timed out":String(e.message).slice(0,220);}}
   finally{clearTimeout(timer);clockProbeRunning=false;
     if(!document.hidden){clearTimeout(clockProbeTimer);
       clockProbeTimer=setTimeout(probeClock,generation===clockGeneration?1000:0);}}
@@ -87,15 +97,34 @@ let cameraNaturalWidth=0,cameraNaturalHeight=0,lastHistoryAt=0;
 let cameraDecoder=null;
 let stopPending=false,messagePending=false,controlSequence=0,lastRenderedRevision=null;
 const graphHistory=[];
+let previewBoot=null;
+function observePreviewBoot(boot){
+  if(previewBoot===boot)return;
+  previewBoot=boot;cameraSession++;cameraPending=null;
+  cameraSequence=cameraFetchedSequence=cameraFetchedStamp=cameraCapturedAt=null;
+  cameraReceivedAt=0;cameraAgeAtReceipt=Infinity;
+  if(cameraDecoder)cameraDecoder.src="";
+  if(cameraAbort)cameraAbort.abort();
+  cameraReason="Waiting for preview from the observed Pi session";
+}
 
 function connectState(){
   if(document.hidden||stateStream)return;
   if(!clockAnchor&&!clockProbeRunning&&clockProbeTimer===null)probeClock();
-  stateStream=new EventSource("/sim/events");
-  stateStream.onopen=()=>{streamConnected=true;};
-  stateStream.addEventListener("state",event=>{
+  clearTimeout(stateReconnectTimer);stateReconnectTimer=null;
+  const stream=new EventSource("/sim/events");stateStream=stream;
+  stream.onopen=()=>{if(stateStream===stream)streamConnected=true;};
+  stream.addEventListener("state",event=>{
+    if(stateStream!==stream)return;
     try{
       const state=JSON.parse(event.data);
+      if(!state||typeof state!=="object"||Array.isArray(state)||typeof state.server_boot_id!=="string"||!state.server_boot_id||
+         !nonnegative(state.server_at)||state.server_at===0||!Number.isSafeInteger(state.revision)||state.revision<0)throw Error("Malformed Pi state envelope");
+      stateObservedAt=performance.now();stateObservedMessages++;observePreviewBoot(state.server_boot_id);
+      // Retain displayable diagnostics even when timing is untrusted. These
+      // infinite ages never establish freshness or authorize Resume.
+      observedState={...state,receivedPerf:stateObservedAt,serverAgeAtReceipt:Infinity,sourceAgeAtReceipt:Infinity};
+      stateReason="Pi sample received; waiting for verified timing";
       if(clockAnchor&&clockAnchor.boot===state.server_boot_id&&!Number.isFinite(stampAge(state.server_at)))return;
       if(latestState&&latestState.server_boot_id===state.server_boot_id&&state.revision<latestState.revision)return;
       if(latestState&&latestState.server_boot_id===state.server_boot_id&&state.server_at<=latestState.server_at)return;
@@ -103,14 +132,22 @@ function connectState(){
         if(clockAnchor){clockAnchor=null;clearTimeout(clockProbeTimer);probeClock();}
         return;
       }
-      if(latestState&&latestState.server_boot_id!==state.server_boot_id){cameraSequence=null;cameraFetchedSequence=null;cameraFetchedStamp=null;cameraSession++;cameraCapturedAt=null;cameraAgeAtReceipt=Infinity;}
       state.receivedPerf=performance.now();
       state.serverAgeAtReceipt=stampAge(state.server_at);
       state.sourceAgeAtReceipt=stampAge(state.brain?._produced_at_pi_lower);
-      latestState=state;stateReceivedAt=state.receivedPerf;stateMessages++;
-    }catch(e){streamConnected=false;}
+      latestState=state;stateMessages++;stateReason="Pi state timing verified";
+    }catch(e){stateRejected++;stateReason="Rejected Pi state: "+String(e.message).slice(0,180);}
   });
-  stateStream.onerror=()=>{streamConnected=false;}; // EventSource reconnects; no replay queue.
+  stream.onerror=()=>{
+    if(stateStream!==stream)return;
+    streamConnected=false;stateReason="Pi state stream disconnected; retrying";
+    // Native EventSource retries transient loss. Some failures close it
+    // permanently; keep one bounded retry, without a historical event queue.
+    if(stream.readyState===2){
+      stream.close();stateStream=null;clearTimeout(stateReconnectTimer);
+      if(!document.hidden)stateReconnectTimer=setTimeout(connectState,1000);
+    }
+  };
 }
 
 async function nextCamera(){
@@ -189,9 +226,11 @@ async function decodeCamera(){
 
 function pauseFeeds(){
   if(stateStream)stateStream.close();stateStream=null;streamConnected=false;
+  clearTimeout(stateReconnectTimer);stateReconnectTimer=null;
   cameraSession++;cameraPending=null;cameraFetchedSequence=null;cameraFetchedStamp=null;
   if(cameraDecoder)cameraDecoder.src="";
   if(cameraAbort)cameraAbort.abort();clearTimeout(cameraTimer);
+  stateMessages=cameraFrames=cameraReceivedFrames=0;metricStart=performance.now();metricsReady=false;
   clockGeneration++;clockAnchor=null;clearTimeout(clockProbeTimer);clockProbeTimer=null;
 }
 function resumeFeeds(){if(!document.hidden){probeClock();connectState();nextCamera();}}
@@ -212,12 +251,12 @@ function sampleGraphs(s,now){
   if(!s||now-lastHistoryAt<1000)return;
   lastHistoryAt=now;
   const b=s.brain||{},live=telemetryAge(s)<=3000,link=b.pipeline?.transport;
-  const cameraLive=frameAge(now)<=2000,piFresh=serverAge(s)<=2000;
+  const cameraLive=frameAge(now)<=2000,piFresh=serverAge(s)<=2000,previewRecent=cameraReceivedAt>0&&now-cameraReceivedAt<=2000;
   const battery=inputTiming(s,b.inputs?.battery),sonar=inputTiming(s,b.inputs?.ultrasonic);
   const point={at:now,boot:s.server_boot_id,battery:battery.fresh?numeric(b.battery_v):null,
     sonar:sonar.fresh?numeric(b.distance_cm):null,capture:cameraLive&&piFresh?numeric(s.camera_capture?.capture_fps):null,
-    encoded:cameraLive&&piFresh?numeric(s.camera_capture?.encoded_fps):null,preview:cameraLive?numeric(cameraHz):null,
-    age:cameraLive?frameAge(now):null,rtt:cameraLive?numeric(cameraRTT):null,
+    encoded:cameraLive&&piFresh?numeric(s.camera_capture?.encoded_fps):null,preview:previewRecent&&metricsReady?numeric(cameraHz):null,
+    age:cameraLive?frameAge(now):null,rtt:previewRecent?numeric(cameraRTT):null,
     ping:live&&link?.ready?numeric(link.last_rtt_ms):null,uncertainty:live&&link?.ready?clockWidth(link):null};
   for(const host of ["pi","jetson"])for(const key of ["cpu_percent","memory_used_mib","temperature_c"])
     point[host+"_"+key]=hostValue(s,host,key);
@@ -296,19 +335,31 @@ function renderState(s){
   const sourceAge=telemetryAge(s),live=sourceAge<=3000,link=b.pipeline?.transport,piFresh=serverAge(s)<=2000;
   const runtime=s.robot_runtime||{},sim=typeof runtime.simulate==="boolean"?runtime.simulate:typeof b.simulate==="boolean"?b.simulate:null;
   const motion=runtime.motion||{};const stopped=motion.stop_latched===true||b.stopped===true;
-  const phase=!Number.isFinite(sourceAge)?"Timing unknown":!live?"Companion telemetry stale":stopped?"Stopped · fresh resume required":b.episode?.phase||"Waiting for companion";
-  text("petname",b.name||"Crab");text("episode",phase);text("blocked",live?(b.blocked_reason||"Stillness is intentional. No autonomous roaming."):"Check the companion process and transport diagnostics. Cached values do not establish current health.");
-  text("provenance",sim===true?"EXPLICIT SIMULATION":sim===false?"REAL INPUTS · UNVERIFIED":"SOURCE UNKNOWN");
+  const hasCompanion=Object.keys(b).length>0;
+  let phase;
+  if(!piFresh)phase="Pi timing unverified";
+  else if(!hasCompanion)phase="Companion not publishing";
+  else if(!Number.isFinite(sourceAge))phase="Companion timing unverified";
+  else if(!live)phase="Companion telemetry stale";
+  else if(stopped)phase="Stopped · fresh resume required";
+  else phase=b.episode?.phase||"Waiting for companion";
+  let blocked;
+  if(live)blocked=b.blocked_reason||"Stillness is intentional. No autonomous roaming.";
+  else if(!piFresh)blocked="Pi packets are displayable diagnostics; capture age is unverified. Resume stays disabled.";
+  else if(!hasCompanion)blocked="Pi is connected. Start the Jetson companion with dashboard publishing enabled.";
+  else blocked="Companion samples have no verified fresh timing. Inspect Pi–Jetson transport and clock details.";
+  text("petname",b.name||"Crab");text("episode",phase);text("blocked",blocked);
+  text("provenance",sim===true?(piFresh?"EXPLICIT SIMULATION":"REPORTED SIMULATION"):sim===false?(piFresh?"REAL INPUTS · UNVERIFIED":"REPORTED REAL · AGE UNKNOWN"):"SOURCE UNKNOWN");
   $("provenance").className="badge "+(sim===true?"sim":"neutral");
   text("motion-status",!piFresh?"MOTION UNKNOWN":sim===true?"VIRTUAL MOTION ONLY":motion.enabled===true?"ACTUATORS ENABLED":motion.enabled===false?"ACTUATORS DISABLED":"MOTION UNKNOWN");
   $("motion-status").className="badge "+(!piFresh?"warn":sim===true?"sim":motion.enabled===true?"bad":"neutral");
   text("pi-link",piFresh&&streamConnected?"State feed live":piFresh?"State fresh · reconnecting":"No fresh Pi state");text("pi-link-detail",`SSE ${stateHz.toFixed(1)} updates/s · ${fmt(serverAge(s),0," ms")} upper age`);
-  text("jetson-link",live&&link?.ready?"WebSocket ready":live?"Link unavailable":"No fresh companion");
+  text("jetson-link",live&&link?.ready?"WebSocket ready":live?"Link unavailable":hasCompanion?"Samples received · timing unverified":"No companion samples");
   text("jetson-link-detail",link?.failure_reason||`Status age ${fmt(link?.status_capture_age_s,2," s")} · ping ${fmt(link?.last_rtt_ms,1," ms")}`);
   const c=link?.clock,width=clockWidth(link);
   text("clock-value",live&&width!==null?`[${fmt(c.offset_lower_s*1000,1)}, ${fmt(c.offset_upper_s*1000,1)}] ms`:"Unmeasured");
-  text("clock-detail",live&&width!==null?`Pi − Jetson · probe width ${fmt(width,1," ms")}`:"Unknown timing is never fresh");
-  $("resume-review").disabled=stopPending||!(live&&link?.ready&&stopped);text("mode",b.mode||"stationary");
+  text("clock-detail",live&&width!==null?`Pi − Jetson · probe width ${fmt(width,1," ms")}`:"No fresh Pi–Jetson clock evidence");
+  $("resume-review").disabled=!!renderError||stopPending||!(piFresh&&streamConnected&&live&&link?.ready&&stopped);text("mode",b.mode||"stationary");
   const active=list(b.intentions).find(i=>i&&["active","pending"].includes(i.status));
   text("current-intent",!live?"Waiting for fresh evidence":active?String(active.kind).replaceAll("_"," "):stopped?"Remain stopped":b.episode?.phase==="listen"?"Listening window":"Settle nearby");
   text("intent-reason",!live?"No behavior is inferred from stale telemetry.":active?.reason||b.blocked_reason||"No movement request active. Stillness is intentional.");
@@ -316,12 +367,12 @@ function renderState(s){
   text("last-response",b.last_say||"No response recorded.");
   const audio=b.audio?.last_result;text("response-outcome",!audio?"Output is not verified audible.":audio.ok===true?"Playback request succeeded · audibility unverified":audio.reason||"Output was not emitted or not confirmed");
   const intentions=list(b.intentions).filter(i=>i&&typeof i==="object").slice(-8).reverse();
-  html("timeline",intentions.length?intentions.map(i=>`<li><strong>${esc(String(i.kind||"intention").replaceAll("_"," "))}</strong><span class="result-state">${esc(intentLabel(i))}</span><p>${esc(i.result?.reason||i.reason||"No outcome detail")}</p><time>${esc(i.source||"unknown source")}${i.created_at?" · "+esc(new Date(i.created_at*1000).toLocaleTimeString()):""}</time></li>`).join(""):'<li class="empty">No intentions recorded. Start the companion and send a message.</li>');text("timeline-count",intentions.length);
+  html("timeline",intentions.length?intentions.map(i=>`<li><strong>${esc(String(i.kind||"intention").replaceAll("_"," "))}</strong><span class="result-state">${esc((live?"":"last reported · ")+intentLabel(i))}</span><p>${esc(i.result?.reason||i.reason||"No outcome detail")}</p><time>${esc(i.source||"unknown source")}${i.created_at?" · "+esc(new Date(i.created_at*1000).toLocaleTimeString()):""}</time></li>`).join(""):'<li class="empty">No intentions recorded. Start the companion and send a message.</li>');text("timeline-count",intentions.length);
   const battery=inputTiming(s,b.inputs?.battery),sonar=inputTiming(s,b.inputs?.ultrasonic);
   text("battery-value",battery.fresh?fmt(b.battery_v,2," V"):"Unknown / stale");text("sonar-value",sonar.fresh?fmt(b.distance_cm,1," cm"):"No fresh reading");
-  const cam=s.camera_capture||{},age=frameAge(),cameraLive=piFresh&&age<=2000;
-  text("capture-rate",`${fmt(piFresh?cam.capture_fps:null,1)} / ${fmt(piFresh?cam.encoded_fps:null,1)} fps`);text("preview-rate",`${fmt(cameraReceivedHz,1)} / ${fmt(cameraHz,1)} fps`);
-  text("fps-value",cameraLive?`${fmt(cam.capture_fps,1)} / ${fmt(cameraHz,1)} fps`:"Unknown / stale");text("latency-value",Number.isFinite(age)?`${fmt(age,0)} / ${fmt(cameraRTT,0)} ms`:"Unknown / stale");
+  const cam=s.camera_capture||{},age=frameAge();
+  text("capture-rate",`${fmt(piFresh?cam.capture_fps:null,1)} / ${fmt(piFresh?cam.encoded_fps:null,1)} fps`);
+  text("latency-value",Number.isFinite(age)?`${fmt(age,0)} / ${fmt(cameraRTT,0)} ms`:"Unknown / stale");
   text("network-value",live&&link?.ready?`${fmt(link.last_rtt_ms,1)} / ${fmt(width,1)} ms`:"Unknown");
   for(const [id,key,unit,digits] of [["cpu-value","cpu_percent","%",1],["memory-value","memory_used_mib"," MiB",0],["temperature-value","temperature_c"," °C",1]])
     text(id,`${fmt(hostValue(s,"pi",key),digits,unit)} / ${fmt(hostValue(s,"jetson",key),digits,unit)}`);
@@ -396,24 +447,58 @@ function drawMap(s){
 }
 
 
+function renderTransport(now){
+  const clockValid=remoteBounds()!==null,observedRecent=stateObservedAt>0&&now-stateObservedAt<1500;
+  const acceptedFresh=latestState&&serverAge(latestState)<=2000;
+  const issue=renderError?`Dashboard display error: ${renderError}. STOP remains available.`:
+    !clockValid?`Timing unverified: ${clockReason==="Browser–Pi clock calibrated"?"clock anchor expired":clockReason}. Capture ages and Resume remain unavailable.`:
+    !streamConnected?"Pi state stream disconnected. Reconnecting automatically; cached values are not current health.":
+    stateReason.startsWith("Rejected")?stateReason:null;
+  $("runtime-alert").hidden=!issue;text("runtime-alert",issue||"");
+  $("runtime-alert").className="runtime-alert "+(renderError?"error":"warning");
+  text("feed-state",!streamConnected?"Pi stream disconnected":observedRecent?(clockValid?"live connection":"Pi stream connected · timing unverified"):"Pi stream open · waiting for sample");
+  if(!acceptedFresh||!clockValid||!streamConnected||renderError)$("resume-review").disabled=true;
+  if(!acceptedFresh){
+    text("pi-link",observedRecent?"Pi samples arriving · timing unverified":streamConnected?"Pi stream open · waiting":"No fresh Pi state");
+    text("pi-link-detail",`${stateObservedMessages} packets received · ${stateRejected} rejected · ${stateReason}`);
+  }
+  text("browser-clock-detail",clockValid?`Browser–Pi: calibrated · ${fmt(clockProbeResult?.rtt_ms,1)} ms round trip`:`Browser–Pi: ${clockReason}`);
+  if(!latestState&&!observedState){text("episode",observedRecent?"Verifying Pi timing":"Waiting for Pi state");text("blocked",issue||"Waiting for the first Pi state sample; companion health is not yet known.");}
+  if($("diagnostics").open)text("frontend-health",JSON.stringify({clock_valid:clockValid,clock_reason:clockReason,
+    probe:clockProbeResult,stream_connected:streamConnected,packets_received:stateObservedMessages,rejected:stateRejected,
+    last_packet_age_ms:stateObservedAt?Math.round(now-stateObservedAt):null,state_reason:stateReason,display_error:renderError},null,2));
+}
+function renderPreviewRates(now){
+  const state=latestState||observedState,piFresh=state&&serverAge(state)<=2000;
+  const recent=cameraReceivedAt>0&&now-cameraReceivedAt<=2000;
+  text("preview-rate",`${fmt(metricsReady?cameraReceivedHz:null,1)} / ${fmt(metricsReady?cameraHz:null,1)} fps`);
+  text("fps-value",`${fmt(piFresh?state.camera_capture?.capture_fps:null,1)} / ${fmt(recent&&metricsReady?cameraHz:null,1)} fps`);
+}
 let lastPaint=0;
 function paint(now){
+  try{
   if(now-lastPaint>=250&&!document.hidden){
-    if(now-metricStart>=1000){const seconds=(now-metricStart)/1000;stateHz=stateMessages/seconds;cameraHz=cameraFrames/seconds;cameraReceivedHz=cameraReceivedFrames/seconds;stateMessages=cameraFrames=cameraReceivedFrames=0;metricStart=now;}
-    if(latestState){renderState(latestState);sampleGraphs(latestState,now);}else if(now-lastHistoryAt>=1000){drawGraphs(now);lastHistoryAt=now;}
-    const connected=streamConnected&&now-stateReceivedAt<1500;text("feed-state",connected?"live connection":"reconnecting…");
-    const age=frameAge(now);$("cam").style.opacity=age>2000?".4":"1";
+    lastPaint=now;
+    if(now-metricStart>=1000){const seconds=(now-metricStart)/1000;stateHz=stateMessages/seconds;cameraHz=cameraFrames/seconds;cameraReceivedHz=cameraReceivedFrames/seconds;stateMessages=cameraFrames=cameraReceivedFrames=0;metricStart=now;metricsReady=true;}
+    const displayState=latestState&&Number.isFinite(serverAge(latestState))?latestState:(observedState||latestState);
+    if(displayState){renderState(displayState);sampleGraphs(displayState,now);}else if(now-lastHistoryAt>=1000){drawGraphs(now);lastHistoryAt=now;}
+    renderPreviewRates(now);renderTransport(now);
+    const age=frameAge(now),recent=cameraReceivedAt>0&&now-cameraReceivedAt<=2000;$("cam").style.opacity=recent?"1":".4";
     text("camera-age",Number.isFinite(age)?Math.round(age)+" ms":"Unknown");
-    text("camera-source",`${cameraProvenance.toUpperCase()} / ${age>2000?"STALE OR UNKNOWN":"ENCODED FRAME"}`);
+    text("camera-source",`${cameraProvenance.toUpperCase()} / ${!Number.isFinite(age)?"TIMING UNVERIFIED":age>2000?"STALE":"ENCODED FRAME"}`);
     const displayWidth=$("cam").getBoundingClientRect().width,scale=cameraNaturalWidth?displayWidth/cameraNaturalWidth:null;
     text("camera-dimensions",cameraNaturalWidth?`${cameraNaturalWidth} × ${cameraNaturalHeight} · ${fmt(scale,2)}×`:"—");
-    text("camera-stats",cameraReason||(!Number.isFinite(age)?"Frame timing unknown · clock calibration required":age>2000?"Last frame is stale · inspect capture and transport":"Newest decoded preview · encoded age excludes exposure and encode delay"));
+    text("camera-stats",cameraReason||(!Number.isFinite(age)?"JPEG preview received · capture timing unverified; inspect the timing banner":age>2000?"Last frame is stale · inspect capture and transport":"Newest decoded preview · encoded age excludes exposure and encode delay"));
     html("camera-timing",[["Headers / first-byte wait",fmt(cameraHeaderMs,1," ms")],["Body transfer",fmt(cameraTransferMs,1," ms")],["JPEG decode",fmt(cameraDecodeMs,1," ms")],["Decode-slot wait",fmt(cameraQueueMs,1," ms")],["JPEG payload",cameraBytes===null?"—":fmt(cameraBytes/1024,1," KiB")],["Replaced before decode",String(cameraDropped)]].map(([label,value])=>`<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(""));
     const config=latestState?.camera_capture;
     const compression=config?.encoder_requested==="mjpeg_hw"&&config.quality_applied===false?`${fmt(numeric(config.requested_bitrate_bps)===null?null:config.requested_bitrate_bps/1e6,2)} Mbps target · JPEG quality not applied`:`JPEG quality ${config?.requested_quality??"—"}${config?.quality_applied===false?" (not applied by this encoder API)":""}`;
     text("camera-config",config?`${config.sensor_model||"Sensor model unreported"} · ${config.encoder||"encoder unknown"} · requested ${config.requested_width??"—"}×${config.requested_height??"—"} @ ${config.requested_fps??"—"} fps · ${compression}. Capture cadence: ${config.capture_fps_source||"unmeasured"}.`:"Capture configuration has not arrived.");
-    lastPaint=now;
-  }requestAnimationFrame(paint);
+    renderError=null;
+  }
+  }catch(error){
+    renderError=String(error.message).slice(0,220);$("resume-review").disabled=true;$("resume-confirm").hidden=true;
+    renderTransport(now);
+  }finally{requestAnimationFrame(paint);}
 }
 
 document.addEventListener("visibilitychange",()=>document.hidden?pauseFeeds():resumeFeeds());
@@ -427,7 +512,7 @@ document.querySelectorAll("[data-message]").forEach(button=>button.addEventListe
 document.querySelectorAll("[data-stop]").forEach(button=>button.addEventListener("click",stopCompanion));
 $("resume-review").addEventListener("click",()=>{if(stopPending)return;$("resume-confirm").hidden=false;$("resume-confirm-button").focus();});
 $("resume-cancel").addEventListener("click",()=>{$("resume-confirm").hidden=true;$("resume-review").focus();});
-$("resume-confirm-button").addEventListener("click",()=>{$("resume-confirm").hidden=true;if(stopPending||!latestState||telemetryAge(latestState)>3000||!latestState.brain?.pipeline?.transport?.ready){text("input-result","Resume not sent · fresh connected status required");return;}sendText("resume");});
+$("resume-confirm-button").addEventListener("click",()=>{$("resume-confirm").hidden=true;if(renderError||stopPending||!streamConnected||!latestState||serverAge(latestState)>2000||telemetryAge(latestState)>3000||!latestState.brain?.pipeline?.transport?.ready){text("input-result","Resume not sent · fresh connected status required");return;}sendText("resume");});
 $("camera-size").addEventListener("click",()=>{const native=$("camera-panel").classList.toggle("native");$("camera-size").setAttribute("aria-pressed",String(native));text("camera-size",native?"Fit · no upscale":"Native 1:1");});
 $("camera-expand").addEventListener("click",()=>{const expanded=$("camera-panel").classList.toggle("expanded");document.body.classList.toggle("expanded-view",expanded);$("camera-expand").setAttribute("aria-expanded",String(expanded));text("camera-expand",expanded?"Close view":"Expand");});
 document.addEventListener("keydown",event=>{if(event.key==="Escape"&&$("camera-panel").classList.contains("expanded"))$("camera-expand").click();});

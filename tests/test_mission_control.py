@@ -4,6 +4,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -92,6 +94,47 @@ class VitalsTests(unittest.TestCase):
         result = self.vitals.snapshot()
         self.assertEqual(result["temperature_c"], 43)
         self.assertEqual(result["temperature_source"], "cpu-thermal")
+
+
+class VitalsSamplerTests(unittest.TestCase):
+    def test_slow_metrics_never_run_in_snapshot_or_block_readers(self):
+        from shared.vitals import VitalsSampler
+        entered, release = threading.Event(), threading.Event()
+        owner = []
+        def collect():
+            owner.append(threading.get_ident());entered.set();release.wait(2)
+            return {"host":"pi","captured_at":1000,"age_s":0,"cpu_percent":10,"reasons":{}}
+        sampler = VitalsSampler("pi", collector=Mock(snapshot=collect))
+        self.addCleanup(release.set);self.addCleanup(sampler.close)
+        self.assertIsNone(sampler.snapshot()["cpu_percent"])
+        self.assertEqual(owner,[])
+        sampler.start();thread=sampler._thread;sampler.start()
+        self.assertIs(sampler._thread,thread);self.assertTrue(entered.wait(1))
+        for _ in range(50):
+            self.assertIsNone(sampler.snapshot()["cpu_percent"])
+        self.assertEqual(len(owner),1);self.assertNotEqual(owner[0],threading.get_ident())
+        sampler.close(timeout=0)
+        release.set();thread.join(1)
+        self.assertIsNone(sampler.snapshot()["cpu_percent"],"late collection must not restore closed health")
+
+    def test_collection_duration_is_part_of_sample_age_and_errors_remain_unknown(self):
+        from shared.vitals import VitalsSampler
+        now=[10.0];done=threading.Event()
+        def collect():
+            now[0]=10.5;done.set()
+            return {"host":"pi","captured_at":1000,"age_s":.1,"cpu_percent":20,"reasons":{}}
+        sampler=VitalsSampler("pi",collector=Mock(snapshot=collect),clock=lambda:now[0])
+        self.addCleanup(sampler.close);sampler.start();self.assertTrue(done.wait(1))
+        deadline=time.monotonic()+1
+        while sampler.snapshot()["cpu_percent"] is None and time.monotonic()<deadline:time.sleep(.005)
+        self.assertAlmostEqual(sampler.snapshot()["age_s"],.6)
+        now[0]=11;self.assertAlmostEqual(sampler.snapshot()["age_s"],1.1)
+        sampler.close();sampler.collector=Mock(snapshot=Mock(side_effect=OSError("unreadable fixture")))
+        sampler.start();deadline=time.monotonic()+1
+        while sampler.snapshot()["sampling"]["state"]!="failed" and time.monotonic()<deadline:time.sleep(.005)
+        result=sampler.snapshot();self.assertIsNone(result["cpu_percent"])
+        self.assertIn("unreadable fixture",result["sampling"]["reason"])
+        json.dumps(result,allow_nan=False)
 
 
 class CameraInstrumentationTests(unittest.TestCase):
@@ -200,7 +243,7 @@ s.brain.inputs.battery.available=false;mono+=1000;wall+=1000;sampleGraphs(s,mono
     def test_stale_state_cannot_publish_old_capture_rates_with_live_jpeg(self):
         self.js("""
 drawGraphs=()=>{};clockAnchor={wall,perf:mono,lower:0,upper:0,boot:'pi'};
-cameraReceivedAt=mono;cameraAgeAtReceipt=0;cameraCapturedAt=wall/1000;cameraHz=8;
+cameraReceivedAt=mono;cameraAgeAtReceipt=0;cameraCapturedAt=wall/1000;cameraHz=8;metricsReady=true;
 const s={server_boot_id:'pi',receivedPerf:mono-10000,server_at:(wall-10000)/1000,serverAgeAtReceipt:0,sourceAgeAtReceipt:0,
  camera_capture:{capture_fps:15,encoded_fps:14},brain:{}};
 sampleGraphs(s,mono);const p=graphHistory.at(-1);assert.equal(p.capture,null);assert.equal(p.encoded,null);assert.equal(p.preview,8);
@@ -213,6 +256,40 @@ let release;const calls=[];postJSON=async(path,payload)=>{calls.push(payload);if
  release({ok:true});await stopping;assert(document.getElementById('input-result').textContent.includes('STOP acknowledged'));assert(!stopPending);
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """.replace('__STOP_PATH__', '/stop'))
+
+    def test_render_fault_is_throttled_and_stop_remains_independent(self):
+        self.js("""
+let renders=0,scheduled=0;function requestAnimationFrame(){scheduled++;}
+latestState={};renderState=()=>{renders++;throw Error('controlled renderer fixture failure');};renderTransport=()=>{};
+postJSON=async()=>({ok:true});
+(async()=>{paint(mono);mono+=16;paint(mono);assert.equal(renders,1);assert.equal(scheduled,2);
+ assert(document.getElementById('resume-review').disabled);await stopCompanion();assert(document.getElementById('input-result').textContent.includes('STOP acknowledged'));
+})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+    def test_untrusted_observed_reboot_resets_preview_sequence_without_granting_freshness(self):
+        self.js("""
+probeClock=()=>{};let handler;
+const EventSource=class{addEventListener(type,fn){handler=fn;}};
+const URL={createObjectURL:()=> 'blob:fixture',revokeObjectURL(){}};
+const Image=class{constructor(){this.naturalWidth=960;this.naturalHeight=720;}decode(){return Promise.resolve();}};
+connectState();handler({data:JSON.stringify({server_at:1000,server_boot_id:'old',revision:1,brain:{}})});
+cameraFetchedSequence='500';cameraFetchedStamp=1000;const generation=cameraSession;
+handler({data:JSON.stringify({server_at:1000.1,server_boot_id:'new',revision:0,brain:{}})});
+assert.equal(latestState,null);assert.equal(observedState.server_boot_id,'new');assert(cameraSession>generation);assert.equal(cameraFetchedSequence,null);
+const fetch=async()=>({ok:true,headers:{get:k=>({'X-Crab-Sequence':'1','X-Crab-Captured-At':'1000.2','X-Crab-Frame-Age-Ms':'0','Content-Length':'1'}[k]??null)},body:{getReader(){let sent=false;return {async read(){if(sent)return {done:true};sent=true;return {done:false,value:new Uint8Array(1)};},releaseLock(){}};}}});
+(async()=>{await nextCamera();for(let i=0;i<15;i++)await Promise.resolve();assert.equal(cameraSequence,'1');assert.equal(latestState,null);assert.equal(frameAge(),Infinity);})().catch(e=>{console.error(e);process.exitCode=1;});
+""")
+
+    def test_terminal_eventsource_error_reconnects_once_and_hidden_tab_cancels_retry(self):
+        self.js("""
+probeClock=()=>{};let created=0;
+const EventSource=class{constructor(){created++;this.readyState=2;}addEventListener(){}close(){}};
+connectState();const first=stateStream;first.onerror();first.onerror();
+assert.equal(stateStream,null);assert.equal([...timers.values()].filter(t=>t.ms===1000).length,1);
+const retry=[...timers.values()].find(t=>t.ms===1000);retry.fn();assert.equal(created,2);
+stateStream.onerror();document.hidden=true;pauseFeeds();assert.equal(stateReconnectTimer,null);
+""")
 
     def test_old_pending_input_cannot_overwrite_new_stop_acknowledgement(self):
         self.js("""

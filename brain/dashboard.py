@@ -8,7 +8,7 @@ import uuid
 
 import httpx
 from shared.clock import CaptureClock
-from shared.vitals import SystemVitals
+from shared.vitals import VitalsSampler
 from shared.local import require_local_url
 
 
@@ -27,8 +27,9 @@ class Dashboard:
         self._last_latency_ms = self._last_success_at = None
         self._last_error = None
         self._thread = None
-        self._vitals = SystemVitals("jetson")
+        self._vitals = VitalsSampler("jetson")
         if self.url:
+            self._vitals.start()
             self._thread = threading.Thread(target=self._run, daemon=True, name="dashboard-publisher")
             self._thread.start()
 
@@ -105,8 +106,10 @@ class Dashboard:
                         self._last_latency_ms = round((time.monotonic() - started) * 1000, 1)
 
     def close(self, timeout: float = 1.2) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
         with self._condition:
             self._closed = True
             self._condition.notify()
         if self._thread:
-            self._thread.join(timeout=max(0.0, timeout))
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        self._vitals.close(timeout=max(0.0, deadline - time.monotonic()))

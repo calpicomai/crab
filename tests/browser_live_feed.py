@@ -187,7 +187,7 @@ def main(argv=None):
             # Chromium's offline emulation doesn't terminate an already-open SSE
             # socket. Exercise the page's pause/reopen path while offline too.
             cdp.value("pauseFeeds(); connectState(); nextCamera(); true")
-            cdp.wait("document.querySelector('#feed-state').textContent.includes('reconnecting')", timeout=3)
+            cdp.wait("!streamConnected && document.querySelector('#feed-state').textContent.includes('disconnected')", timeout=3)
             fixture.update(name="Latest after reconnect", _sequence=2,
                            _produced_at=time.time(), _produced_at_pi_lower=time.time(), _sent_at=time.time())
             assert http.post(base + "/sim/brain", json=fixture).json()["ok"]
