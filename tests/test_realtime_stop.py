@@ -25,6 +25,7 @@ class HeldResume:
         self.stop_calls = 0
         self.fences = 0
         self.resume_epochs = []
+        self.boot_id = "one"
 
     def cancel_commands(self):
         self.fences += 1
@@ -35,7 +36,9 @@ class HeldResume:
         if not self.release.wait(5):
             raise TimeoutError("held test resume timed out")
         self.latch = False
-        return {"ok": True, "action": "resume"}
+        return {"ok": True, "action": "resume", "status": {
+            "boot_id": self.boot_id, "observed_at": time.time(),
+            "motion_state": {"stop_latched": False}}}
 
     def emergency_stop(self):
         self.stop_calls += 1
@@ -106,6 +109,29 @@ class RealtimeStopTests(unittest.TestCase):
         self.assertTrue(self.robot.latch, "late resume undid shutdown stop")
         self.assertGreaterEqual(self.robot.stop_calls, 2)
         self.assertTrue(any(item.get("outcome") == "unknown" for item in self.c.snapshot()["movements"]))
+
+    def test_cancelled_late_error_with_confirmed_cleanup_does_not_issue_another_stop(self):
+        def late_error(**_kwargs):
+            self.robot.started.set()
+            if not self.robot.release.wait(2):
+                raise TimeoutError("held late-error fixture timed out")
+            raise RuntimeError("late cancelled RPC failed")
+        self.robot.resume = late_error
+        self.start_resume()
+        self.c.hear("stop")
+        self.c._control[1].result(timeout=1)
+        self.c.tick()  # consume the original STOP before the cancelled RPC returns
+        self.assertIsNone(self.c._control)
+        self.assertEqual(self.robot.stop_calls, 1)
+        self.robot.release.set()
+        outcome = self.c._resume[1].result(timeout=1)
+        self.assertTrue(outcome.cleanup_stop["ok"])
+        self.assertEqual(self.robot.stop_calls, 2)
+        self.c.tick()
+        if self.c._control:
+            self.c._control[1].result(timeout=1)
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(self.robot.stop_calls, 2, "confirmed late cleanup must not advance STOP again")
 
     def test_uncancelled_resume_does_not_issue_cleanup_stop(self):
         self.start_resume()
@@ -181,6 +207,7 @@ class RealtimeStopTests(unittest.TestCase):
         self.c.observe({**status(time.time()), "control_epoch": 90})
         self.c.observe({**status(time.time()), "boot_id": "two", "control_epoch": 0,
                         "motion_state": {"stop_latched": True}})
+        self.robot.boot_id = "two"
         self.assertTrue(self.robot.stopped.wait(.3))
         self.c._control[1].result(timeout=1)
         self.c.tick()
@@ -228,6 +255,152 @@ class RealtimeStopTests(unittest.TestCase):
             self.assertEqual(other.snapshot()["inputs"]["transport"]["source"], "robot WebSocket")
         finally:
             other.close()
+
+
+class OrderedResume(HeldResume):
+    def resume(self, *, expected_control_epoch=None):
+        super().resume(expected_control_epoch=expected_control_epoch)
+        return self.response
+
+
+class ResumeOrderingTests(unittest.TestCase):
+    """Explicit interleavings with virtual time, not timing sleeps or a network."""
+
+    def setUp(self):
+        self.wall, self.mono = 1000.0, 10.0
+        self.robot = OrderedResume()
+        self.c = Coordinator(self.robot, SilentVoice(), clock=lambda: self.mono,
+                             wall_clock=lambda: self.wall)
+        self.c.observe(self.sample(3, 1000))
+
+    def tearDown(self):
+        self.robot.release.set()
+        self.c.close()
+
+    def sample(self, epoch, stamp, *, latched=True, boot="one"):
+        return {**status(stamp), "boot_id": boot, "control_epoch": epoch,
+                "motion_state": {"stop_latched": latched}}
+
+    def completed_resume(self, *, response=None):
+        self.robot.response = response if response is not None else {
+            "ok": True, "action": "resume", "status": self.sample(4, 1000.1, latched=False)}
+        # Wire RobotStatus has no epoch; provenance comes from the original
+        # explicit event and the Pi's validated lease, never current transport health.
+        self.robot.response.get("status", {}).pop("control_epoch", None)
+        intent = self.c.hear("resume", control_epoch=4)
+        self.c.tick()
+        self.assertTrue(self.robot.started.wait(.5))
+        self.wall, self.mono = 1000.2, 10.2
+        self.robot.release.set()
+        self.c._resume[1].result(timeout=1)
+        return intent
+
+    def test_result_before_matching_status_does_not_relatch(self):
+        resume = self.completed_resume()
+        age_anchor = self.c._status_at
+        self.c.tick()
+        self.assertFalse(self.c.stopped)
+        self.assertEqual(self.c._status["control_epoch"], 4)
+        self.assertEqual(self.c._status_at, age_anchor, "RPC receipt must not refresh status age")
+        # A poll captured before the acknowledgement cannot undo it.
+        self.c.observe(self.sample(4, 1000.05))
+        self.assertFalse(self.c.stopped)
+        self.c.observe(self.sample(4, 1000.2, latched=False))
+        self.assertFalse(self.c.stopped, "the acknowledged STOP epoch is not a new STOP")
+        self.assertEqual(resume.status.value, "completed")
+
+    def test_newer_matching_unlatched_status_before_result_is_valid(self):
+        resume = self.completed_resume()
+        self.c.observe(self.sample(4, 1000.2, latched=False))
+        self.c.tick()
+        self.assertFalse(self.c.stopped)
+        self.assertEqual(resume.status.value, "completed")
+        self.assertEqual(self.c._last_status_observed_at, 1000.2)
+
+    def test_new_stop_wins_before_result_poll(self):
+        resume = self.completed_resume()
+        self.c.observe(self.sample(5, 1000.2))
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(self.c._status["control_epoch"], 5)
+        self.assertEqual(resume.status.value, "cancelled")
+
+    def test_new_stop_wins_after_result_poll(self):
+        resume = self.completed_resume();self.c.tick()
+        self.c.observe(self.sample(5, 1000.2))
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(self.c._status["control_epoch"], 5)
+        self.assertEqual(resume.status.value, "completed")
+
+    def test_lower_epoch_cannot_replace_acknowledged_epoch_or_refresh_age(self):
+        self.completed_resume();self.c.tick()
+        anchor = self.c._status_at
+        self.c.observe(self.sample(3, 1000.3))
+        self.assertEqual(self.c._status["control_epoch"], 4)
+        self.assertEqual(self.c._status_at, anchor)
+        self.assertFalse(self.c.stopped)
+        self.c.observe(self.sample(5, 1000.4))
+        self.assertTrue(self.c.stopped)
+
+    def test_acknowledgement_cannot_defeat_status_expiry(self):
+        self.completed_resume();self.c.tick()
+        self.wall, self.mono = 1002.1, 12.1
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertIn("expired", self.c.blocked_reason)
+
+    def test_newer_latched_status_cannot_be_cleared_by_older_ack(self):
+        resume = self.completed_resume()
+        self.c.observe(self.sample(4, 1000.2))
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(resume.status.value, "failed")
+
+    def test_reboot_cancels_old_result_and_epoch_scope(self):
+        resume = self.completed_resume()
+        self.c.observe(self.sample(0, 1000.2, boot="two"))
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(resume.status.value, "cancelled")
+        self.assertEqual(self.c._boot_id, "two")
+        self.assertEqual(self.c._status["control_epoch"], 0)
+
+    def assert_rejected_ack(self, **changes):
+        response = {"ok": True, "action": "resume", "status": self.sample(4, 1000.1, latched=False)}
+        response["status"].update(changes)
+        resume = self.completed_resume(response=response)
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(resume.status.value, "failed")
+        self.assertEqual(self.c._status["control_epoch"], 3)
+        self.assertEqual(self.c._last_status_observed_at, 1000)
+        self.assertTrue(self.robot.stopped.wait(.5), "uncertain resume must reassert STOP")
+
+    def test_replayed_ack_is_not_an_epoch_acknowledgement(self):
+        self.assert_rejected_ack(observed_at=1000)
+
+    def test_stale_ack_is_not_an_epoch_acknowledgement(self):
+        self.assert_rejected_ack(observed_at=997)
+
+    def test_future_ack_cannot_extend_the_status_fence(self):
+        self.assert_rejected_ack(observed_at=1001)
+
+    def test_missing_ack_time_is_not_an_epoch_acknowledgement(self):
+        self.assert_rejected_ack(observed_at=None)
+
+    def test_wrong_boot_ack_cannot_clear_the_latch(self):
+        self.assert_rejected_ack(boot_id="other")
+
+    def test_malformed_latch_ack_cannot_clear_the_latch(self):
+        self.assert_rejected_ack(motion_state={"stop_latched": 0})
+
+    def test_failed_ack_never_creates_epoch_authority(self):
+        resume = self.completed_resume(response={"ok":False,"action":"resume"})
+        self.c.tick()
+        self.assertTrue(self.c.stopped)
+        self.assertEqual(self.c._status["control_epoch"], 3)
+        self.assertEqual(resume.status.value, "failed")
 
 
 if __name__ == "__main__":
