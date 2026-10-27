@@ -15,12 +15,14 @@ from shared.realtime import PROTOCOL_VERSION, WS_PATH
 
 
 class RealtimeReadinessTests(unittest.TestCase):
-    def run_report(self, health, *, audio_error=None):
+    def run_report(self, health, *, audio_error=None, health_error=None, status_error=None, status_ok=True):
         client = MagicMock(spec=["base_url", "health", "get_status", "__enter__", "__exit__"])
         client.base_url = "http://localhost:8000"
         client.__enter__.return_value = client
         client.health.return_value = health
-        client.get_status.return_value = CommandResponse(ok=True, action=Action.GET_STATUS,
+        client.health.side_effect = health_error
+        client.get_status.side_effect = status_error
+        client.get_status.return_value = CommandResponse(ok=status_ok, action=Action.GET_STATUS,
                                                         status=RobotStatus())
         voice = MagicMock(spec=["health"])
         voice.health.return_value = {"enabled": False, "reason": "audio disabled"}
@@ -75,6 +77,32 @@ class RealtimeReadinessTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertFalse(report["realtime"]["compatible"])
                 self.assertIn("matching Crab release", report["failure_reason"])
+
+    def test_health_failure_does_not_hide_independent_status_audio_or_local_diagnostics(self):
+        code, report = self.run_report({}, health_error=httpx.ConnectError("health fixture unavailable"))
+        self.assertEqual(code,1)
+        self.assertIn("status",report)
+        self.assertIn("audio_diagnostics",report)
+        self.assertIn("jetson_audio",report)
+        self.assertEqual(report["checks"]["robot_health"]["state"],"error")
+        self.assertEqual(report["checks"]["robot_status"]["state"],"completed")
+        self.assertFalse(report["realtime"]["live_connection_tested"])
+        self.assertFalse(report["hardware_verified"])
+
+    def test_rejected_status_is_not_a_successful_readiness_result(self):
+        code, report=self.run_report({"realtime":self.advertisement()},status_ok=False)
+        self.assertEqual(code,1)
+        self.assertEqual(report["checks"]["robot_status"]["state"],"error")
+        self.assertIn("audio_diagnostics",report)
+
+    def test_status_failure_preserves_health_compatibility_and_audio(self):
+        code, report = self.run_report({"realtime":self.advertisement()}, status_error=httpx.ReadTimeout("status fixture timed out"))
+        self.assertEqual(code,1)
+        self.assertTrue(report["realtime"]["compatible"])
+        self.assertIn("audio_diagnostics",report)
+        self.assertEqual(report["checks"]["robot_status"]["state"],"error")
+        self.assertEqual(report["checks"]["audio_diagnostics"]["state"],"completed")
+        self.assertIn("status fixture",report["failure_reason"])
 
     def test_later_diagnostic_failure_preserves_compatibility_explanation(self):
         code, report = self.run_report({}, audio_error=httpx.ConnectError("audio diagnostics unavailable"))

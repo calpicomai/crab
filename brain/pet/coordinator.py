@@ -33,6 +33,8 @@ class _ResumeOutcome:
     error: str | None = None
     cleanup_stop: dict | None = None
     cleanup_error: str | None = None
+    dispatch_boot_id: str | None = None
+    dispatch_observed_at: float | None = None
 
 
 class Coordinator:
@@ -149,9 +151,11 @@ class Coordinator:
         stop = getattr(self.control_client, "emergency_stop", self.control_client.stop)
         return stop()
 
-    def _run_resume(self, cancelled, expected_control_epoch=None):
+    def _run_resume(self, cancelled, expected_control_epoch=None,
+                    dispatch_boot_id=None, dispatch_observed_at=None):
         """Only return results to the owner thread; never resume/retry on failure."""
-        outcome = _ResumeOutcome()
+        outcome = _ResumeOutcome(dispatch_boot_id=dispatch_boot_id,
+                                 dispatch_observed_at=dispatch_observed_at)
         try:
             if cancelled.is_set():
                 outcome.error = "resume cancelled before dispatch"
@@ -196,6 +200,9 @@ class Coordinator:
             return  # an older poll cannot undo an acknowledged control transition
         epoch = status.get("control_epoch")
         previous_epoch = self._status.get("control_epoch")
+        if (status.get("boot_id") == self._boot_id and type(epoch) is int
+                and type(previous_epoch) is int and epoch < previous_epoch):
+            return  # old authority cannot undo an acknowledgement or refresh age
         epoch_advanced = (status.get("boot_id") == self._boot_id
                           and type(epoch) is int and type(previous_epoch) is int
                           and epoch > previous_epoch)
@@ -460,6 +467,36 @@ class Coordinator:
                 intent.result["ignored_target"] = "target absent from fresh supported perception"
         return intent
 
+    def _record_resume_epoch(self, intent, result, outcome):
+        epoch = intent.payload.get("control_epoch")
+        if epoch is None:
+            return  # legacy HTTP inputs have no WS epoch acknowledgement
+        status = result.get("status") or {}
+        stamp = status.get("observed_at")
+        current_epoch = self._status.get("control_epoch")
+        age = capture_age(stamp, self._status.get("_clock"),
+                          wall=self.wall_clock(), mono=self.clock())
+        if (type(epoch) is not int or not 0 <= epoch <= 2**53 - 1
+                or result.get("ok") is not True or result.get("action") != "resume"
+                or not outcome.dispatch_boot_id
+                or status.get("boot_id") != outcome.dispatch_boot_id
+                or status.get("boot_id") != self._boot_id
+                or status.get("motion_state", {}).get("stop_latched") is not False
+                or age is None or age > 2.0
+                or not self._number(outcome.dispatch_observed_at)
+                or stamp <= outcome.dispatch_observed_at
+                or (type(current_epoch) is int and current_epoch > epoch)):
+            raise ValueError("resume acknowledgement lacks fresh matching boot/epoch/unlatched status")
+        # Status may overtake the result on the owner thread. A newer sample
+        # must corroborate this same epoch and unlatched state, never contradict it.
+        if (self._last_status_observed_at is not None and stamp < self._last_status_observed_at
+                and (current_epoch != epoch or
+                     self._status.get("motion_state", {}).get("stop_latched") is not False)):
+            raise ValueError("newer Pi status contradicts the resume acknowledgement")
+        # The successful one-use lease proves only the ORIGINAL event epoch.
+        # Do not import a newer transport epoch or refresh status/sensor ages.
+        self._status["control_epoch"] = epoch
+
     def _poll(self):
         for attr in ("_motion", "_resume", "_control"):
             pair = getattr(self, attr)
@@ -469,6 +506,7 @@ class Coordinator:
             setattr(self, attr, None)
             try:
                 completed = future.result()
+                resume_outcome = completed if attr == "_resume" else None
                 if attr == "_resume":
                     if completed.cleanup_stop is not None:
                         self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
@@ -477,12 +515,21 @@ class Coordinator:
                         self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
                             "outcome": "unknown", "reason": "late resume cleanup stop unconfirmed: " + completed.cleanup_error})
                     if completed.error:
+                        if (intent.status == IntentionStatus.CANCELLED and not completed.cleanup_error
+                                and completed.cleanup_stop and completed.cleanup_stop.get("ok") is True
+                                and completed.cleanup_stop.get("action") == "stop"):
+                            self._finish(intent, "cancelled",
+                                "cancelled resume RPC failed; cleanup STOP acknowledged",
+                                rpc_error=completed.error)
+                            continue  # no new loss/epoch after confirmed cancellation cleanup
                         raise RuntimeError(completed.error)
                     completed = completed.response
                 result = _dict(completed)
                 self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
                                         "response": result})
                 was_cancelled = intent.status == IntentionStatus.CANCELLED
+                if intent.kind == IntentionName.RESUME and result.get("ok") and not was_cancelled:
+                    self._record_resume_epoch(intent, result, resume_outcome)
                 self._finish(intent, "cancelled" if was_cancelled else "completed" if result.get("ok") else "failed",
                              result.get("detail", ""), response=result)
                 if intent.kind == IntentionName.RESUME and result.get("ok") and not was_cancelled:
@@ -507,6 +554,10 @@ class Coordinator:
                                         "outcome": "unknown", "reason": reason})
                 self._finish(intent, "failed", reason)
                 self.connection_lost(reason)
+                if intent.kind == IntentionName.RESUME and not self._control:
+                    # An uncertain successful resume may have cleared the Pi
+                    # latch while this owner was already stopped. Reassert STOP.
+                    self.request("stop", source="safety", reason=reason)
                 if intent.kind == IntentionName.STOP:
                     for waiting in self._coalesced_stops:
                         self._finish(waiting, "failed", reason)
@@ -524,7 +575,7 @@ class Coordinator:
             else:
                 self._resume_cancelled = threading.Event()
                 self._resume = (intent, self._resume_pool.submit(self._run_resume, self._resume_cancelled,
-                                                               intent.payload.get("control_epoch")))
+                    intent.payload.get("control_epoch"), self._boot_id, self._last_status_observed_at))
             return True
         if self.stopped:
             self._finish(intent, "blocked", "stop latched; explicit resume required")

@@ -107,6 +107,13 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(transport.client_options["follow_redirects"])
         self.assertGreaterEqual(dashboard.health()["last_latency_ms"], 0)
 
+    def test_close_budget_also_bounds_optional_metrics_cleanup(self):
+        transport=FakeHTTP()
+        dashboard=self.make(transport)
+        with patch.object(dashboard._vitals,"close") as close:
+            dashboard.close(timeout=0)
+        close.assert_called_once_with(timeout=0)
+
     def test_visible_histories_are_trimmed_and_nested_values_are_copied(self):
         transport = FakeHTTP(block_first=True)
         dashboard = self.make(transport)

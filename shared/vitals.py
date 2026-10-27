@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import copy
+import json
 from pathlib import Path
 import threading
 import time
@@ -90,3 +92,78 @@ class SystemVitals:
         result["source"] = "Linux /proc and CPU thermal zones; process CPU uses one-core percent"
         result["process_id"] = os.getpid()
         return result
+
+
+class VitalsSampler:
+    """One optional metrics worker; snapshot never performs filesystem work."""
+
+    def __init__(self, host, *, collector=None, clock=time.monotonic):
+        self.host, self.collector, self.clock = host, collector or SystemVitals(host), clock
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._closed = False
+        self._sample = None
+        self._sample_at = None
+        self._sample_age = 0
+        self._state, self._reason = "not started", "host sampling has not started"
+
+    def start(self):
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return not self._closed
+            self._closed = False
+            self._stop.clear()
+            self._sample, self._sample_at = None, None
+            self._state, self._reason = "warming up", "waiting for first host sample"
+            self._thread = threading.Thread(target=self._run, daemon=True,
+                                            name=f"{self.host}-host-vitals")
+            self._thread.start()
+            return True
+
+    def _unknown(self):
+        return {"host": self.host, "captured_at": None, "age_s": None,
+                **{key: None for key in ("cpu_percent", "process_cpu_percent", "rss_mib",
+                                        "memory_used_mib", "memory_total_mib", "temperature_c")},
+                "temperature_source": None, "reasons": {"sampling": self._reason}}
+
+    def snapshot(self):
+        with self._lock:
+            if self._closed or self._sample is None:
+                sample = self._unknown()
+            else:
+                sample = copy.deepcopy(self._sample)
+                elapsed = self.clock()-self._sample_at
+                sample["age_s"] = self._sample_age+elapsed if elapsed >= 0 else None
+            state = "stopping" if self._closed and self._thread and self._thread.is_alive() else self._state
+            sample["sampling"] = {"state": state, "reason": self._reason}
+            return sample
+
+    def _run(self):
+        while not self._stop.is_set():
+            started = self.clock()
+            try:
+                sample = self.collector.snapshot()
+                json.dumps(sample, allow_nan=False)
+                if sample.get("host") != self.host or type(sample.get("age_s")) not in (int, float) or sample["age_s"] < 0:
+                    raise ValueError("invalid host sample identity or age")
+                state, reason = "sampled", None
+            except Exception as exc:
+                sample, state, reason = None, "failed", str(exc)[:200]
+            finished = self.clock()
+            with self._lock:
+                if self._closed or self._stop.is_set():
+                    return  # Late collection cannot restore health after close.
+                self._sample, self._sample_at = copy.deepcopy(sample), finished
+                self._sample_age = sample["age_s"]+max(0, finished-started) if sample else 0
+                self._state, self._reason = state, reason
+            self._stop.wait(max(.05, 1-(finished-started)))
+
+    def close(self, timeout=.2):
+        with self._lock:
+            self._closed = True
+            self._state, self._reason = "closed", "host sampling stopped"
+            self._stop.set()
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0, timeout))

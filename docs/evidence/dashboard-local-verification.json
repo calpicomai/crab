@@ -1,0 +1,137 @@
+{
+  "base": "88df7b3f8792524e7e025c610e6854064d3118fd",
+  "branch": "fix/dashboard-startup-diagnostics",
+  "scope": "Development-host code/tests/design. Explicit fakes/simulation; no hardware or ROS runtime acceptance.",
+  "commands": [
+    {
+      "name": "focused54",
+      "exit_code": 0,
+      "original_log": "/tmp/crab-dashboard-focused-final.log",
+      "sha256": "c31d01d18a8944599919d8d8be8ffd736d4f6072c09aa7ea46edae5bdec4bcd4",
+      "summary": [
+        "Ran 54 tests in 0.674s",
+        "OK"
+      ]
+    },
+    {
+      "name": "quick331",
+      "exit_code": 0,
+      "original_log": "/tmp/crab-dashboard-local-quick-complete.log",
+      "sha256": "92f1bf17ba97af106a4cb8de62e8253d4170f359fd14300380bbd428ec5d86f3",
+      "summary": [
+        "Ran 331 tests in 11.567s",
+        "OK",
+        "Recorded 9 simulated scenarios in /tmp/tmp.mgsscBVeMu/scenarios.json",
+        "HTTP simulator health, virtual body and explicit synthetic camera passed.",
+        "Simulation validation passed. Hardware motion, audio and Jetson inference remain pending."
+      ]
+    },
+    {
+      "name": "full331",
+      "exit_code": 1,
+      "original_log": "/tmp/crab-dashboard-local-completion-full.log",
+      "sha256": "1b61d5969c720f6869f6d3de84bdb9f63af4e87d4d162fc8b0c15d87a47bddc3",
+      "summary": [
+        "Ran 331 tests in 11.636s",
+        "OK",
+        "Recorded 9 simulated scenarios in /tmp/tmp.LbuXY7Qv8N/scenarios.json",
+        "HTTP simulator health, virtual body and explicit synthetic camera passed.",
+        "AssertionError: explicit resume failed: {'episode': {'phase': 'stopped'}, 'mode': 'interaction', 'mood': 'curious', 'state': {'mood': 'curious', 'engagement': 0.395, 'alertness': 0.0, 'interactions': 1, 'temperament': {'hesitation_s': 1.0, 'listen_s': 6.0, 'pr"
+      ]
+    },
+    {
+      "name": "unchanged_baseline_full251",
+      "exit_code": 1,
+      "original_log": "/tmp/crab-clock-baseline-full.log",
+      "sha256": "ce613b66f75e151e997805c01674669293919dcdde5e032582f34bc246101b99",
+      "summary": [
+        "Ran 251 tests in 9.856s",
+        "OK",
+        "Recorded 9 simulated scenarios in /tmp/tmp.0KNmnMS4ff/scenarios.json",
+        "HTTP simulator health, virtual body and explicit synthetic camera passed.",
+        "AssertionError: explicit resume failed: {'episode': {'phase': 'stopped'}, 'mode': 'interaction', 'mood': 'curious', 'state': {'mood': 'curious', 'engagement': 0.396, 'alertness': 0.0, 'interactions': 1, 'temperament': {'hesitation_s': 1.0, 'listen_s': 6.0, 'pr"
+      ]
+    },
+    {
+      "name": "resume_red_expected_failure",
+      "exit_code": 1,
+      "original_log": "/tmp/crab-resume-red.log",
+      "sha256": "9a762b86c4b394bc190a3606fe946b12bdfa3202bf2507876da59cbef5611354",
+      "summary": [
+        "AssertionError: 3 != 4",
+        "AssertionError: False is not true",
+        "Ran 2 tests in 0.002s",
+        "FAILED (failures=2)"
+      ]
+    },
+    {
+      "name": "review_regression_red_expected_failure",
+      "exit_code": 1,
+      "original_log": "/tmp/crab-resume-review-red.log",
+      "sha256": "80f929b65463db5061906cbde49f407b3254b1557c443f70f9c2b2bf7dd22cfb",
+      "summary": [
+        "AssertionError: 3 != 2 : confirmed late cleanup must not advance STOP again",
+        "Ran 1 test in 0.002s",
+        "FAILED (failures=1)"
+      ]
+    },
+    {
+      "name": "resume_affected89_final",
+      "exit_code": 0,
+      "original_log": "/tmp/crab-resume-affected-final.log",
+      "sha256": "7afd7620847322a11d637377e4007504ea9e0f28d96979637c0aa9d8a64e8e7f",
+      "summary": [
+        "Ran 89 tests in 8.077s",
+        "OK"
+      ]
+    },
+    {
+      "name": "full347_final",
+      "exit_code": 0,
+      "original_log": "/tmp/crab-resume-full-final.log",
+      "sha256": "769974bdd7e687dee480a117982fed7cf9a67061dbbc30d466a3c720ab5b3720",
+      "summary": [
+        "Ran 347 tests in 11.697s",
+        "OK",
+        "Recorded 9 simulated scenarios in /tmp/tmp.jijReX4Kqq/scenarios.json",
+        "HTTP simulator health, virtual body and explicit synthetic camera passed.",
+        "Live WebSocket companion greeting, priority stop and resume passed.",
+        "Simulation validation passed. Hardware motion, audio and Jetson inference remain pending."
+      ]
+    }
+  ],
+  "browser_reports": [
+    "dashboard-startup-native.json",
+    "dashboard-mission-fixtures.json",
+    "dashboard-live-native.json"
+  ],
+  "other_checks": {
+    "compileall": "pass",
+    "node_syntax": "pass",
+    "shell_syntax": "pass",
+    "git_diff_check": "pass",
+    "protected_source_comparison": "clock/transport/leases/gait/sensors/audio/test_sim unchanged; coordinator deliberately repaired for acknowledged epoch ordering and cancellation cleanup"
+  },
+  "unrun": [
+    "physical devices",
+    "audio audibility",
+    "camera hardware throughput/quality",
+    "Jetson inference",
+    "ROS runtime integration"
+  ],
+  "resolved_full_smoke_failure": "Pi stop generation changed; explicit fresh resume required",
+  "independent_safety_concurrency_review": {
+    "status": "closed, no remaining introduced defects found",
+    "tests": "27 Resume/STOP tests passed in independent closure review",
+    "finding": "Extra STOP after cancelled RPC error with confirmed cleanup",
+    "resolution": "Regression failed with3STOPs instead of2; confirmed cleanup remains cancelled and skips further loss/STOP processing. Unconfirmed cleanup retains fail-closed reassertion."
+  },
+  "remote_ci": "Assessed separately on the published draft PR head; local evidence is recorded here.",
+  "publication_recovery_smoke": {
+    "date": "2026-10-27",
+    "command": "bash test_sim.sh",
+    "exit_code": 0,
+    "source_patch_sha256": "4f2b2ed4c65a47ae799a89d5cf37398a77cb00a978f3aab8ea9cb8b2e92f6205",
+    "outcome": "All347tests and full simulation smoke passed again after environment recovery; runtime source unchanged."
+  }
+}

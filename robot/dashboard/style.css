@@ -231,3 +231,8 @@ footer{text-align:left;line-height:1.7}
 
 .resume-confirm{top:var(--safety-height,85px)}
 .camera-panel.expanded{top:calc(var(--safety-height,85px) + 12px)}
+
+.runtime-alert{padding:12px 16px;margin:0 0 18px;border:1px solid #6a522c;border-radius:8px;background:#2a2419;color:#f0d5a5;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.runtime-alert.error{border-color:#a04b50;background:#321d23;color:#ffd4d5}
+
+.operation-strip .strip-stat:last-child{flex-wrap:wrap}

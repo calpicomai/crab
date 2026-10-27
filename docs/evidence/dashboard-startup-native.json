@@ -1,0 +1,90 @@
+{
+  "scope": "Native Chromium EventSource over actual loopback HTTP/SSE; all hardware disabled, camera explicitly synthetic. Injected skew is not a device measurement.",
+  "null_inputs_accepted": {
+    "states": 10,
+    "latest": true,
+    "clock": true,
+    "source": "REAL INPUTS \u00b7 UNVERIFIED",
+    "motion": "ACTUATORS DISABLED",
+    "host": {
+      "host": "pi",
+      "captured_at": 1793055698.431851,
+      "interval_s": 1,
+      "cpu_percent": null,
+      "process_cpu_percent": 4.3,
+      "rss_mib": null,
+      "memory_used_mib": null,
+      "memory_total_mib": null,
+      "temperature_c": null,
+      "temperature_source": null,
+      "reasons": {
+        "cpu_percent": "synthetic unreadable host metric fixture",
+        "memory_used_mib": "synthetic unreadable host metric fixture",
+        "rss_mib": "synthetic unreadable host metric fixture",
+        "temperature_c": "no readable CPU thermal zone"
+      },
+      "source": "Linux /proc and CPU thermal zones; process CPU uses one-core percent",
+      "process_id": 20958,
+      "age_s": 0.3722045119993709,
+      "sampling": {
+        "state": "sampled",
+        "reason": null
+      }
+    },
+    "battery": "Unknown / stale"
+  },
+  "injected_300ms_browser_skew": {
+    "states": 8,
+    "latest": false,
+    "clock": false,
+    "source": "REPORTED REAL \u00b7 AGE UNKNOWN",
+    "episode": "Pi timing unverified",
+    "dimensions": "960 \u00d7 720 \u00b7 0.78\u00d7",
+    "rate": "4.8 / 4.8 fps",
+    "explanation": "Timing unverified: Browser\u2013Pi offset [-299.9, -298.2] ms exceeds \u00b1250 ms bound. Capture ages and Resume remain unavailable."
+  },
+  "actual_sse_reconnect": {
+    "states": 28,
+    "clock": true,
+    "latest": true
+  },
+  "untrusted_reboot_preview_recovers": {
+    "clock": false,
+    "latest": false,
+    "preview_sequence": "40",
+    "resume_disabled": true
+  },
+  "pi_vitals_without_companion": {
+    "phase": "Companion not publishing",
+    "cpu": "23.5% / \u2014",
+    "memory": "512 MiB / \u2014",
+    "temperature": "42.0 \u00b0C / \u2014"
+  },
+  "network_delay_rejected_visibly": {
+    "reason": "Clock probe round trip 302 ms exceeds 200 ms bound",
+    "probe": {
+      "rtt_ms": 302.2999999988824,
+      "offset_lower_ms": -300.2567871082574,
+      "offset_upper_ms": 2.043212890625,
+      "at": 1346
+    },
+    "packets": 14,
+    "resume_disabled": true
+  },
+  "host_read_delay_s": 0.12,
+  "responsive": {
+    "320": {
+      "no_overflow": true,
+      "stop_visible": true
+    },
+    "768": {
+      "no_overflow": true,
+      "stop_visible": true
+    },
+    "1024": {
+      "no_overflow": true,
+      "stop_visible": true
+    }
+  },
+  "javascript_errors": []
+}

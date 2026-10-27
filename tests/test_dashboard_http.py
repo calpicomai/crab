@@ -50,6 +50,28 @@ class DashboardHTTPTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 503)
                 self.assertIn("no-store", response.headers["Cache-Control"])
 
+    def test_failed_startup_closes_the_optional_metrics_owner(self):
+        sampler=Mock();camera=Mock();camera.start.side_effect=RuntimeError("startup fixture failure")
+        async def run():
+            async with self.server.lifespan(self.server.app):
+                self.fail("startup should fail before serving")
+        with patch.object(self.server,"_host_vitals",sampler), patch.object(self.server,"camera",camera), patch.object(self.server,"speaker",None), patch.object(self.server.realtime_hub,"close",AsyncMock()):
+            with self.assertRaisesRegex(RuntimeError,"startup fixture"):
+                asyncio.run(run())
+        sampler.start.assert_called_once_with()
+        sampler.close.assert_called_once_with()
+        camera.stop.assert_called_once_with()
+
+    def test_clock_probe_bypasses_sensor_and_host_snapshot_work(self):
+        with patch.object(self.server, "_dashboard_state", side_effect=AssertionError("heavy snapshot must not run")), \
+             patch.object(self.server.time, "time", return_value=101.25):
+            response = self.server.sim_clock()
+        body = json.loads(response.body)
+        self.assertEqual(set(body), {"server_at", "server_boot_id"})
+        self.assertEqual(body["server_at"], 101.25)
+        self.assertEqual(body["server_boot_id"], self.server.leases.boot_id)
+        self.assertIn("no-store", response.headers["Cache-Control"])
+
     def test_receipt_age_advances_without_new_telemetry(self):
         self.assertTrue(self.publish(1)["ok"])
         with patch.object(self.server.time, "time", return_value=101.5):
@@ -144,6 +166,30 @@ deliver(1005);assert.equal(latestState.server_at,1000.03);
 deliver(1000.04,'pi',0);assert.equal(latestState.revision,1);
 deliver(1000.13,'reboot');assert.equal(probes,1);assert.equal(latestState.server_boot_id,'pi');
 calibrate(30,'reboot');deliver(1000.142,'reboot');assert.equal(latestState.server_boot_id,'reboot');
+""")
+
+    def test_uncalibrated_stream_keeps_diagnostics_without_accepting_fresh_state(self):
+        source = DASHBOARD_HTML.split("function connectState(){", 1)[1].split("async function nextCamera(){", 1)[0]
+        self.js("""
+const document={hidden:false};let handler=null;
+const EventSource=class{addEventListener(type,fn){handler=fn;}};
+probeClock=()=>{};function connectState(){"""+source+"""
+connectState();handler({data:JSON.stringify({server_at:1000,server_boot_id:'pi',revision:1,
+ robot_runtime:{simulate:false,motion:{enabled:false}},brain:{battery_v:null,inputs:{}}})});
+assert.equal(latestState,null);assert.equal(observedState.server_boot_id,'pi');
+assert.equal(stateObservedMessages,1);assert.equal(serverAge(observedState),Infinity);
+assert(!inputTiming(observedState,{available:true,fresh:true,age_s:0,max_age_s:2,captured_at:1000}).fresh);
+""")
+
+    def test_probe_uses_small_endpoint_and_explains_rejected_round_trip(self):
+        self.js("""
+const document={hidden:false},timers=new Map();let timerId=0,url=null;
+function setTimeout(fn,delay){const id=++timerId;timers.set(id,delay);return id;}function clearTimeout(id){timers.delete(id);}
+const fetch=async path=>{url=path;wall+=300;mono+=300;return {ok:true,status:200,json:async()=>({server_at:1000.1,server_boot_id:'pi'})};};
+(async()=>{await probeClock();assert.equal(url,'/sim/clock');assert.equal(clockAnchor,null);
+ assert(clockReason.includes('round trip'));assert.equal(clockProbeResult.rtt_ms,300);
+ assert.equal([...timers.values()].length,1);
+})().catch(e=>{console.error(e);process.exitCode=1;});
 """)
 
     def test_clock_probe_has_one_timer_and_restarts_after_visibility_generation(self):
