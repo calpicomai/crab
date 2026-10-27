@@ -1,0 +1,24 @@
+# Relayed server reports only; this interface grants no control authority.
+ObservationContext context
+ObservationContext companion_context
+InputObservation[<=32] inputs
+HostVitals pi
+HostVitals jetson
+uint64 revision
+bool real_valid
+bool real
+bool simulated_valid
+bool simulated
+bool motion_enabled_valid
+bool motion_enabled
+bool stop_latched_valid
+bool stop_latched
+bool companion_motion_enabled_valid
+bool companion_motion_enabled
+bool companion_stopped_valid
+bool companion_stopped
+bool battery_v_valid
+float64 battery_v
+bool sonar_cm_valid
+float64 sonar_cm
+bool companion_fresh

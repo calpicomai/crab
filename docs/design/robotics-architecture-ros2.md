@@ -6,22 +6,32 @@ The owner explicitly prefers its flexibility. Migrate in reversible phases with
 the Pi remaining the sole hardware owner. The first runtime phase is a read-only
 adapter; its purpose is to establish the contracts and validate the platform
 before replacing components. This document is a local design, not an installation
-or a working ROS integration. The immediate dashboard repair works without ROS.
+or a device deployment. The immediate dashboard repair works without ROS.
+Update2026-10-27: the first [read-only bridge](../ros-observer.md) is implemented
+and tested locally with generated Humble messages and real DDS in an amd64
+container. Arm64 Jetson acceptance and installation remain pending. The
+[Crab-owned autonomy/physics plan](crab-lab-autonomy.md) specifies the next
+simulation-first stages; it does not implement or enable locomotion.
 
 ## What is known, and what is not
 
 Owner evidence identifies a Pi 4B, Robot HAT v4 / robot-hat2.5.3, OV5647, and Jetson
 Orin Nano Super 8GB. Existing camera tests distinguish 640x480q80 from clearer but
-slower960x720q90. The installed OS, architecture, JetPack/L4T, CUDA/TensorRT and
-ROS-compatible Python versions have not been inventoried in this task. Bookworm
-is a repository target, not a verified inventory result here. No device was
-accessed, model loaded, driver changed or hardware benchmark performed.
+slower960x720q90. Owner inventory now confirms Jetson Ubuntu22.04.5 arm64,
+Python3.10.12, JetPack6.2.1+b38/L4T36.4.7, and Pi Bookworm armhf userspace with an
+aarch64 kernel/Python3.11.2. Humble matches the Jetson's existing ABI, but support
+ends May2027; plan a deliberate later distro/platform migration. CUDA/TensorRT
+package/runtime details are not verified here. Jetson SD write/journal errors
+remain unresolved; no heavy installation on it is appropriate in this milestone.
+No device was accessed, model loaded, driver changed or hardware benchmark
+performed by this task.
 
 ## Responsibilities and interfaces
 
 The diagram shows target logical ownership, not a claim that each box is already
 a separate process. In particular, bounded persistence ownership and the ROS
-adapter are proposed work; the current persistence path is synchronous.
+adapter are separate stages; only the read-only adapter has local middleware
+test evidence. The current persistence path is synchronous.
 
 ```mermaid
 flowchart LR
@@ -206,7 +216,8 @@ not replace, local monotonic authority/watchdog checks.
 Each runtime phase is future work requiring its own review and deployment
 authorization. ROS is the destination; measurements determine the sequencing,
 resource budget and whether an individual component is ready to move. No ROS
-runtime, interface package or hardware migration was executed in this iteration.
+device installation or hardware migration was executed. The subsequent first
+bridge implementation has local generated-interface/DDS evidence only.
 
 ## Reuse versus replacement
 

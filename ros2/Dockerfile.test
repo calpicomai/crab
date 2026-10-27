@@ -1,0 +1,16 @@
+# Off-device verification only. Never used to install or launch on the robot.
+ARG BASE_IMAGE=ros:humble-ros-base-jammy@sha256:d9bcf2e6f72df127fdee07048c2e87b1b4b9a59a74af0592f4489fc2844aa855
+FROM ${BASE_IMAGE}
+# The base already includes colcon, ROSIDL generators, rclpy and diagnostics.
+# Install pre-resolved test wheels offline: this cloud's container DNS is absent.
+RUN test "$(dpkg --print-architecture)" = amd64 \
+    && python3 -m venv --without-pip --system-site-packages /opt/crab-observer-test
+COPY .test-wheels/ /tmp/crab-wheels/
+RUN /opt/crab-observer-test/bin/python -c \
+    'import pathlib,sysconfig,zipfile; dest=sysconfig.get_path("purelib"); [zipfile.ZipFile(p).extractall(dest) for p in sorted(pathlib.Path("/tmp/crab-wheels").glob("*.whl"))]' \
+    && rm -rf /tmp/crab-wheels
+ENV PATH=/opt/crab-observer-test/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=173 \
+    RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+WORKDIR /src
+CMD ["bash", "ros2/test.sh"]

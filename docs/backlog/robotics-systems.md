@@ -44,6 +44,28 @@ migration is specified in [the decision record](../design/robotics-architecture-
 | ROS-02 P2 | Dashboard, perception and lifecycle should share typed evidence rather than parallel ad-hoc contracts. | Existing browser acceptance runs against a ROS observation gateway; isolated replay cannot reach hardware; future perception outputs preserve original frame identity/expiration. One coordinator and bounded persistence owner. Reversible launch profiles and measured8GB budget. | ROS-01, UI-03, CTRL-02/03 and LIFE-01/02. Phases3–5; future runtime work, not implemented here. |
 | ROS-03 P3 | Moving command transport reopens every authority/lifecycle boundary. | Separate reviewed Pi gateway preserves stop/lease/epoch/expiry/uncertain-result equivalence. One writer and authoritative transport; no replay, implicit re-arm or startup motion. Fault injection before separately approved hardware tests. | Successful observation/perception migration and explicit command-safety design. Phase6; no wholesale port in this iteration. |
 
+## New owner-verified platform and next milestones — 2026-10-27
+
+Jetson: Jammy22.04.5 arm64/Python3.10.12/JetPack6.2.1/L4T36.4.7. Pi: Bookworm
+armhf userspace/Python3.11.2. Humble is the matching observation-stage target,
+with support ending May2027. Jetson SD write/journal errors remain unresolved;
+reboot restoring RW is not storage acceptance. No device installation here.
+
+| ID / priority | Evidence and bounded next action | Acceptance / dependency |
+| --- | --- | --- |
+| ROS-01 update | First typed read-only observation bridge is implemented locally; see [runtime guide](../ros-observer.md). No control/media path or Pi changes. | Pure conversion/HTTP plus actual generated Humble/DDS tests; arm64/resource/operational acceptance remains open. Storage and separately approved provisioning precede device installation. |
+| UI-05 P2 | Owner observed `awaiting behavior outcome` remaining after real Hello/STOP/Resume results on1705929 with actuators disabled. | Deterministic event/result correlation test with delayed/out-of-order/reconnect and terminal outcome, preserving stop epochs. Clear the label only from the matching outcome; no control semantics change. Separate patch. |
+| MODEL-01 P1 | Owner wants Crab-owned motion; current vendor targets have no measured joint/contact/IMU feedback. | Independent frame/kinematic model, provenance/uncertainty manifest, read-only calibration importer and fake-driver limits/sign tests. Verify geometry and servo identity; no hardware writer replacement yet. |
+| LAB-01 P1 | Owner wants remote physics-based training/testing; Windows PC has3070Ti/64GB RAM, CPU/VRAM unverified. | [Crab Lab v0](../design/crab-lab-autonomy.md): CPU MuJoCo single-leg then12-joint arena, bounded servo/contact models, localhost browser viewer, seeded regression and isolation proof. No physical adapter, RL, paid compute or installation in this iteration. MODEL-01 first. |
+| CTRL-04 P2 | Scripted vendor frames do not satisfy adaptive/custom movement. | Project procedural swing/stance controller against deployment-shaped observations; held-out friction/mass/noise/latency tests, joint/workspace/stop bounds. LAB-01; feedback capability review before physical balance claims. |
+| SENSE-02 P2 | No measured joint states, body orientation or foot contact integrated. | Specify IMU/joint/contact options against mechanical/electrical/timing/resource needs; distinguish commands and estimates from measurements. No inferred sensors or hardware purchase/install. Required channels depend on controller goals. |
+| AUTO-01 P2 | Meaningful behavior/navigation differs from locomotion adaptation. | Perception/estimator capability matrix, expiring goals and one coordinator; deterministic simulated tasks with blocked path, no echo, localization loss and STOP. No random wandering, hidden pursuit or LLM servo control. LAB-01/CTRL-04 and measured localization/clearance gates. |
+| MEDIA-01 P2 | Owner asks whether self-hosted LiveKit can support the learning/decision view. | Synthetic benchmark versus JPEG, explicit outbound observation allowlist and reject incoming/wildcard/service routes. Preserve frame provenance, capture owner and local control. Egress separate/opt-in; recording alone is not a learning episode. No installation/dependency or media transmission now. |
+
+The new [autonomy/simulation decision](../design/crab-lab-autonomy.md) records
+vendor dependency replacement, licenses, MuJoCo/Gazebo/Isaac comparison, Windows
+versus WSL, privileged-truth isolation, measurements and hardware-only gates.
+
 ## Definition of done
 
 A local item closes only with a named regression that failed before and passes
