@@ -1,0 +1,42 @@
+{
+  "scope": "Loopback real HTTP/SSE; all hardware disabled, camera explicitly synthetic. Injected skew is a mechanism reproduction, not a physical measurement.",
+  "null_inputs_accepted": {
+    "states": 5,
+    "latest": true,
+    "clock": true,
+    "source": "REAL INPUTS \u00b7 UNVERIFIED",
+    "motion": "ACTUATORS DISABLED",
+    "host": {
+      "host": "pi",
+      "captured_at": 1793053622.2472963,
+      "interval_s": 1,
+      "cpu_percent": null,
+      "process_cpu_percent": null,
+      "rss_mib": null,
+      "memory_used_mib": null,
+      "memory_total_mib": null,
+      "temperature_c": null,
+      "temperature_source": null,
+      "reasons": {
+        "cpu_percent": "synthetic unreadable host metric fixture",
+        "memory_used_mib": "synthetic unreadable host metric fixture",
+        "rss_mib": "synthetic unreadable host metric fixture",
+        "temperature_c": "no readable CPU thermal zone"
+      },
+      "source": "Linux /proc and CPU thermal zones; process CPU uses one-core percent",
+      "process_id": 15836,
+      "age_s": 0.4288038310005504
+    },
+    "battery": "Unknown / stale"
+  },
+  "injected_300ms_browser_skew": {
+    "states": 5,
+    "latest": false,
+    "clock": false,
+    "source": "SOURCE UNKNOWN",
+    "episode": "Waiting for companion",
+    "dimensions": "960 \u00d7 720 \u00b7 0.76\u00d7",
+    "rate": "\u2014 / \u2014 fps"
+  },
+  "javascript_errors": []
+}

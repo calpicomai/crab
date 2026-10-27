@@ -87,6 +87,12 @@ record what was sensed, intended, blocked and completed. Scenario timings and
 random seeds are reproducible. [Evidence](docs/VALIDATION.md) distinguishes host
 measurements from unmeasured Jetson inference.
 
+The [local dashboard reliability report](docs/reports/dashboard-local-repair.md)
+records the startup repair and current test limits. The
+[systems backlog](docs/backlog/robotics-systems.md) and
+[phased ROS 2 design](docs/design/robotics-architecture-ros2.md) describe the next
+engineering work; ROS runtime integration is not implemented yet.
+
 The kinematic simulator labels displacement/turn assumptions. `turn(degrees)`
 rejects nonzero precise-angle requests on both hardware and simulator. The
 bounded `turn_steps(left|right, cycles)` primitive reports completed vendor

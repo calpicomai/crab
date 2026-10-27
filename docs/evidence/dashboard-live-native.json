@@ -1,0 +1,19 @@
+{
+  "post_to_visible_ms": 198.51,
+  "visible_name": "Latency fixture",
+  "initial_feed_text": "live connection",
+  "websocket_health_visible": true,
+  "browser_clock_skew_ms": 30,
+  "battery_samples_for_one_revision": 1,
+  "capture_age_remains_stale": true,
+  "stale_telemetry_visible": true,
+  "connection_while_telemetry_stale": "live connection",
+  "reconnect_to_latest_ms": 2824.21,
+  "reconnect_latest_visible": true,
+  "camera_requests": 59,
+  "peak_camera_requests": 1,
+  "event_stream_requests": 3,
+  "javascript_errors": [],
+  "scope": "Headless Chromium against explicit local simulation; no physical camera/Wi-Fi/Jetson",
+  "mobile_has_horizontal_overflow": false
+}
