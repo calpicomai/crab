@@ -1,0 +1,7 @@
+# Development laboratory only; no Pi/Jetson runtime dependency change.
+mujoco==3.17.0
+numpy==2.5.4
+fastapi==0.116.1
+pydantic==2.14.1
+uvicorn==0.35.0
+httpx==0.28.1

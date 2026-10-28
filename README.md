@@ -19,6 +19,11 @@ missing models or automatically start heavy services.
 
 ## Start here
 
+For a separate hardware-free physics laboratory, see [Crab Lab](docs/crab-lab.md).
+It has its own opt-in dependencies and localhost viewer; normal robot/brain
+launchers never start it or import its controller. Its model is provisional and
+does not establish physical readiness or a learned policy.
+
 Existing launchers remain the entry points:
 
 ```bash
