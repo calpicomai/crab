@@ -4,6 +4,7 @@ from brain/agent/config.py; robot/reflex/steer knobs from brain/config.py."""
 from __future__ import annotations
 
 import os
+import math
 
 from ..agent import config as llm_config  # noqa: F401 (re-exported for convenience)
 
@@ -86,8 +87,8 @@ PET_BATTERY_LOW_V: float = float(os.environ.get("PET_BATTERY_LOW_V", "6.6"))
 PET_BATTERY_CRITICAL_V: float = float(os.environ.get("PET_BATTERY_CRITICAL_V", "6.2"))
 PET_BATTERY_LOW_SPEED: int = int(os.environ.get("PET_BATTERY_LOW_SPEED", "55"))
 
-# Reflex clearance handed to each walk (Pi aborts the stride below it).
-PET_REFLEX_CM: float = float(os.environ.get("PET_REFLEX_CM", str(llm_config.AGENT_REFLEX_CM)))
+# Legacy reflex configuration is evaluated lazily below. The stationary
+# companion does not walk and must not parse unused navigation fallbacks.
 
 # --- Emoting (dog-like body language) -----------------------------------------
 # The pet should express with its body, not just walk. On every mood change it
@@ -108,12 +109,32 @@ PET_VOICE_PLAYER: str = os.environ.get("PET_VOICE_PLAYER", "aplay -q")
 PET_AUDIO_SINK: str = os.environ.get("PET_AUDIO_SINK", "pi").strip().lower()  # pi | local
 
 # --- Voice in (spoken commands: Pi mic -> Jetson Whisper STT) ------------------
-# On by default, but degrades to off if faster-whisper isn't installed or the mic
-# stream is unreachable. The pet mic lives on the Pi (robot's /audio/stream);
+# Off by default: recording requires explicit PET_STT=1 opt-in, even if Whisper
+# and a microphone are available. The pet mic lives on the Pi (robot's /audio/stream);
 # faster-whisper runs here. PET_WAKE_WORD (default the pet's name at runtime, if
 # set) gates which utterances it reacts to; empty = react to all speech.
-PET_STT: bool = os.environ.get("PET_STT", "1").strip().lower() not in {"0", "false", "no", "off"}
+_stt_setting = os.environ.get("PET_STT", "").strip().lower()
+if _stt_setting not in {"", "0", "false", "no", "off", "1", "true", "yes", "on"}:
+    raise ValueError("PET_STT must be a boolean (0/1, false/true, no/yes, off/on)")
+PET_STT: bool = _stt_setting in {"1", "true", "yes", "on"}
 WHISPER_MODEL: str = os.environ.get("WHISPER_MODEL", "base")
 WHISPER_DEVICE: str = os.environ.get("WHISPER_DEVICE", "auto")
 WHISPER_COMPUTE: str = os.environ.get("WHISPER_COMPUTE", "int8")
 PET_WAKE_WORD: str = os.environ.get("PET_WAKE_WORD", "")
+
+
+def __getattr__(name: str):
+    if name != "PET_REFLEX_CM":
+        raise AttributeError(name)
+    raw = os.environ.get(name)
+    if raw is None:
+        value = llm_config.AGENT_REFLEX_CM
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError("PET_REFLEX_CM must be a finite positive number") from None
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("PET_REFLEX_CM must be a finite positive number")
+    globals()[name] = value
+    return value

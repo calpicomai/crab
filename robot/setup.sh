@@ -9,11 +9,10 @@
 #
 # The venv is created WITH --system-site-packages on purpose: the SunFounder
 # hardware libraries (robot_hat, picrawler) are installed into the SYSTEM Python
-# by SunFounder's installer, and an isolated venv cannot see them (you'd get
-# `ModuleNotFoundError: No module named 'picrawler'` and the GaitEngine would
-# silently fall back to simulate mode even on the real robot). --system-site-packages
-# lets the venv import those system libs while our pinned deps still install into
-# the venv. If robot_hat/picrawler are missing entirely, GaitEngine simulates.
+# by SunFounder's installer, and an isolated venv cannot see them.
+# --system-site-packages exposes those system libraries to this environment.
+# Missing hardware support remains unavailable; simulation requires explicit
+# PICRAWLER_SIMULATE=1. Installation does not establish hardware acceptance.
 set -euo pipefail
 
 # Directory this script lives in (robot/), regardless of the caller's cwd.
@@ -26,25 +25,23 @@ python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install -r "$NODE_DIR/requirements.txt"
 
-# Report whether the venv can see the SunFounder hardware libs. If not, the
-# server will run in simulate mode (no servos move).
+# Report imports only; this does not construct a crawler or verify hardware.
 if "$VENV/bin/python" -c "import picrawler, robot_hat" 2>/dev/null; then
-    echo "picrawler/robot_hat visible in the venv — real servo control available."
+    echo "picrawler/robot_hat imports succeeded; physical readiness remains unverified."
 else
     echo "WARNING: picrawler/robot_hat NOT importable in the venv."
-    echo "  The server will run in SIMULATE mode. Install SunFounder's picrawler/"
-    echo "  robot_hat into the system Python (their installer), then re-run this script."
+    echo "  Hardware capabilities remain unavailable; there is no implicit simulation."
+    echo "  Review docs/commissioning.md before any separately approved driver installation."
 fi
 
 cat <<EOF
 
-Robot node ready.
+Python dependency setup finished; hardware readiness has not been established.
+Next: follow docs/commissioning.md, including storage/configuration checks and
+explicit approval before starting the server. The guide provides a profile with
+actuators, homing, camera, microphone/speaker and sensor access disabled.
 
-Run the command server from the repo root (so 'import shared' resolves):
+For hardware-free development only, use explicit simulation:
     cd "$REPO_ROOT"
-    robot/.venv/bin/python -m robot.server
-
-Bench-test without moving servos:
-    cd "$REPO_ROOT"
-    PICRAWLER_SIMULATE=1 robot/.venv/bin/python -m robot.server
+    PICRAWLER_SIMULATE=1 PICRAWLER_HOST=127.0.0.1 PICRAWLER_CAMERA_ENABLED=0 PICRAWLER_AUDIO_ENABLED=0 robot/.venv/bin/python -m robot.server
 EOF

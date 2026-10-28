@@ -44,7 +44,9 @@ case "$MODE" in
     [ -z "${PET_NAME:-}" ] || FLAGS+=(--name "$PET_NAME")
     [ "${PET_DASHBOARD:-1}" != 1 ] || FLAGS+=(--dashboard)
     [ "${PET_VOICE:-0}" != 1 ] || FLAGS+=(--voice)
-    [ "${PET_STT:-1}" != 0 ] || FLAGS+=(--no-stt)
+    # Microphone recording is opt-in. Preserve PET_STT=1 saved preferences;
+    # missing/empty values disable STT, and an explicit --no-stt still wins.
+    [ "${PET_STT:-0}" != 0 ] || FLAGS+=(--no-stt)
     # Models are provisioned/started separately after measuring the Jetson budget.
     [ -n "${LLM_BASE_URL:-}" ] || FLAGS+=(--no-llm)
     exec "$PY" -m brain.pet "${FLAGS[@]}" "$@" ;;

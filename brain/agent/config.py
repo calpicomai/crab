@@ -9,6 +9,7 @@ env-overridable, matching the rest of brain/config.py.
 from __future__ import annotations
 
 import os
+import math
 
 from shared import CAMERA_FRAME_PATH
 
@@ -42,7 +43,8 @@ LLM_TIMEOUT_S: float = float(os.environ.get("LLM_TIMEOUT_S", "60"))
 AGENT_TICK_S: float = float(os.environ.get("AGENT_TICK_S", "2.0"))
 # Reflex clearance handed to each walk the agent issues (the Pi aborts a stride
 # below it) — same safety margin the wander loop uses.
-AGENT_REFLEX_CM: float = float(os.environ.get("AGENT_REFLEX_CM", str(brain_config.WANDER_REFLEX_CM)))
+# Evaluated lazily below: the stationary companion reuses LLM settings but does
+# not use the legacy agent's walking/reflex configuration.
 # Free the detectors' RAM for the VLM on startup (the VLM does the seeing now):
 # POST /unload yolo,nanoowl to the perception server. Disable to keep them loaded.
 AGENT_FREE_PERCEPTION_RAM: bool = os.environ.get("AGENT_FREE_PERCEPTION_RAM", "1").strip().lower() not in {
@@ -82,3 +84,20 @@ SYSTEM_PROMPT: str = os.environ.get(
         "see and why you chose the action, in one short friendly sentence."
     ),
 )
+
+
+def __getattr__(name: str):
+    if name != "AGENT_REFLEX_CM":
+        raise AttributeError(name)
+    raw = os.environ.get(name)
+    if raw is None:
+        value = brain_config.WANDER_REFLEX_CM
+    else:
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError("AGENT_REFLEX_CM must be a finite positive number") from None
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("AGENT_REFLEX_CM must be a finite positive number")
+    globals()[name] = value
+    return value

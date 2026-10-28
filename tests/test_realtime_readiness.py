@@ -24,14 +24,13 @@ class RealtimeReadinessTests(unittest.TestCase):
         client.get_status.side_effect = status_error
         client.get_status.return_value = CommandResponse(ok=status_ok, action=Action.GET_STATUS,
                                                         status=RobotStatus())
-        voice = MagicMock(spec=["health"])
-        voice.health.return_value = {"enabled": False, "reason": "audio disabled"}
         response = httpx.Response(200, json={"played": False, "checks": {}},
                                   request=httpx.Request("POST", client.base_url + AUDIO_SELF_TEST_PATH))
         output = io.StringIO()
         with (patch.object(readiness, "RobotClient", return_value=client) as factory,
-              patch.object(readiness, "Voice", return_value=voice) as voice_factory,
-              patch.object(readiness.httpx, "post", return_value=response, side_effect=audio_error) as post,
+              patch.object(readiness, "httpx", httpx),
+              patch.object(httpx, "post", return_value=response, side_effect=audio_error) as post,
+              patch("brain.pet.voice.Voice", side_effect=AssertionError("must not construct active Voice")) as voice_factory,
               patch("brain.realtime.RealtimeClient", side_effect=AssertionError("must not open a control session")) as realtime,
               patch("brain.realtime.connect", side_effect=AssertionError("must not connect WebSocket")) as connect,
               contextlib.redirect_stdout(output)):
@@ -43,9 +42,8 @@ class RealtimeReadinessTests(unittest.TestCase):
         connect.assert_not_called()
         post.assert_called_once_with(client.base_url + AUDIO_SELF_TEST_PATH, json={"play": False},
                                      timeout=8, trust_env=False, follow_redirects=False)
-        voice_factory.assert_called_once()
-        # Readiness never invokes a speech/effect/model worker; only static health.
-        self.assertEqual([call[0] for call in voice.mock_calls], ["health"])
+        voice_factory.assert_not_called()
+        self.assertFalse(json.loads(output.getvalue())["jetson_audio"]["runtime_tested"])
         return code, json.loads(output.getvalue())
 
     def advertisement(self, **changes):
@@ -102,13 +100,50 @@ class RealtimeReadinessTests(unittest.TestCase):
         self.assertIn("audio_diagnostics",report)
         self.assertEqual(report["checks"]["robot_status"]["state"],"error")
         self.assertEqual(report["checks"]["audio_diagnostics"]["state"],"completed")
-        self.assertIn("status fixture",report["failure_reason"])
+        self.assertIn("ReadTimeout",report["failure_reason"])
 
     def test_later_diagnostic_failure_preserves_compatibility_explanation(self):
         code, report = self.run_report({}, audio_error=httpx.ConnectError("audio diagnostics unavailable"))
         self.assertEqual(code, 1)
         self.assertIn("Update Pi and Jetson/brain together", report["failure_reason"])
-        self.assertIn("audio diagnostics unavailable", report["failure_reason"])
+        self.assertIn("ConnectError", report["failure_reason"])
+
+    def test_remote_error_messages_and_unexpected_fields_are_redacted(self):
+        secret = "PRIVATE-READINESS-CANARY"
+        code, report = self.run_report({"realtime": self.advertisement(), "reason": secret,
+                                       "identity": {"name": secret}, "model_path": "/private/" + secret},
+                                      status_error=httpx.ConnectError("http://user:" + secret + "@private.local"),
+                                      audio_error=httpx.ReadTimeout(secret))
+        self.assertEqual(code, 1)
+        self.assertNotIn(secret, json.dumps(report))
+        self.assertTrue(report["realtime"]["compatible"])
+
+    def test_nonfinite_health_cannot_leak_a_partial_advertisement_into_json(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            for location in ("protocol_version", "unrelated_field"):
+                with self.subTest(value=value, location=location):
+                    health = {"realtime": self.advertisement()}
+                    if location == "protocol_version":
+                        health["realtime"][location] = value
+                    else:
+                        health[location] = value
+                    code, report = self.run_report(health)
+                    self.assertEqual(code, 1)
+                    self.assertNotIn("robot", report)
+                    self.assertIsNone(report["realtime"]["advertised"])
+                    self.assertFalse(report["realtime"]["compatible"])
+                    self.assertEqual(report["checks"]["robot_health"]["state"], "error")
+                    self.assertEqual(report["checks"]["realtime_advertisement"]["state"], "not_tested")
+                    self.assertEqual(report["checks"]["robot_status"]["state"], "completed")
+                    self.assertEqual(report["checks"]["audio_diagnostics"]["state"], "completed")
+                    self.assertIn("ValueError", report["failure_reason"])
+                    json.dumps(report, allow_nan=False)
+
+    def test_standalone_advertisement_projection_also_rejects_nonfinite_scalars(self):
+        report = readiness.realtime_readiness({"realtime": self.advertisement(protocol_version=float("nan"))})
+        self.assertFalse(report["compatible"])
+        self.assertIsNone(report["advertised"]["protocol_version"])
+        json.dumps(report, allow_nan=False)
 
 
 if __name__ == "__main__":
