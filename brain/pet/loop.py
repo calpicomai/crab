@@ -6,7 +6,6 @@ body intention; a separate control connection can stop an in-flight primitive.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import queue
 import threading
@@ -24,7 +23,8 @@ from .brain import build_pet_brain
 from .coordinator import Coordinator
 from .identity import PetIdentity
 from .inputs import InputWorker
-from .memory import MemoryStore
+from .persistence import PersistenceWorker
+from .lifecycle import CleanupStack, FaultLatch, ProgressGuard, ShutdownRequested, ShutdownSignals
 from .voice import Voice
 
 
@@ -130,7 +130,13 @@ class MindWorker:
         self.busy = False
         self.closed = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True, name="companion-mind")
-        self.thread.start()
+        try:
+            self.thread.start()
+        except BaseException:
+            self.closed.set()
+            if hasattr(self.brain, "close"):
+                self.brain.close()
+            raise
 
     def submit(self, generation, status, mood, memory_summary):
         if self.busy or self.closed.is_set():
@@ -187,54 +193,79 @@ def main(argv=None) -> int:
     parser.add_argument("--log")
     args = parser.parse_args(argv)
 
-    identity = PetIdentity(args.identity_file, name=args.name)
-    memory = MemoryStore(args.memory_db)
-    realtime = RealtimeClient(args.base_url)
-    client = RobotClient(args.base_url, timeout=5, realtime=realtime)
-    control = RobotClient(args.base_url, timeout=1, realtime=realtime)
-    voice = Voice(enabled=(config.PET_VOICE or args.voice) and not args.no_voice,
-                  model=config.PET_VOICE_MODEL, player=config.PET_VOICE_PLAYER,
-                  sink=config.PET_AUDIO_SINK, play_url=client.base_url+AUDIO_PLAY_PATH,
-                  stop_url=client.base_url+AUDIO_STOP_PATH)
-    coordinator = Coordinator(client, voice, identity, control_client=control, mode=args.mode,
-                              motion_enabled=args.body_expressions and not args.no_emote,
-                              continuity=memory.interaction_history(), transport_source="robot WebSocket")
-    heard = EventInbox()
-    inputs = InputWorker(client.base_url, args.perception_url, heard,
-                         use_camera=not args.no_camera, realtime=realtime)
-    mind = None
-    mind_error = None
-    if not args.no_llm:
-        try:
-            mind = MindWorker(build_pet_brain(args.sim), identity)
-        except Exception as exc:
-            mind_error = str(exc)[:240]
-    ears = None
-    if config.PET_STT and not args.no_stt:
-        ears = build_ears(client.base_url+AUDIO_STREAM_PATH, config.WHISPER_MODEL,
-                          lambda text: _latest(heard, {"text": text, "timestamp": time.time(), "source": "microphone",
-                                                       "control_epoch": realtime.health().get("control_epoch")}),
-                          wake_word=config.PET_WAKE_WORD or None,
-                          device=config.WHISPER_DEVICE, compute_type=config.WHISPER_COMPUTE,
-                          suppress=voice.listening_suppressed,
-                          playback_epoch=lambda: (voice.listening_epoch, realtime.health().get("boot_id"),
-                                                  realtime.health().get("control_epoch")))
-    dashboard = Dashboard(client.base_url, args.dashboard)
-    log = open(args.log, "a", encoding="utf-8") if args.log else None
-    generation = 0
-    latest_status = {}
-    last_boot = None
-    last_control_epoch = None
-    started, last_publish = time.monotonic(), 0.0
-    tick, think_ms = 0, None
-    print(f"{identity.name}: {args.mode} companionship. Body expressions {'requested' if args.body_expressions else 'disabled'}.")
-    print(f"Local controls and readiness: {client.base_url}/sim — say/type hello, stop, resume, or let's play.")
-    print("Hardware validation pending. No autonomous translation. Ctrl+C requests a software stop.")
+    owners = CleanupStack()
+    exit_code = 0
     try:
+        signals = owners.own(ShutdownSignals(), priority=-100)
+        signals.install()
+        identity = PetIdentity(args.identity_file, name=args.name)
+        # No transport starts before disk initialization succeeds within budget.
+        # Thereafter this owner handles every memory read/write and log flush.
+        memory = owners.own(PersistenceWorker(args.memory_db, args.log), priority=10)
+        memory.start()
+        realtime = owners.own(RealtimeClient(args.base_url), priority=60)
+        client = owners.own(RobotClient(args.base_url, timeout=5, realtime=realtime), priority=40)
+        control = owners.own(RobotClient(args.base_url, timeout=1, realtime=realtime), priority=40)
+        voice = owners.own(Voice(enabled=(config.PET_VOICE or args.voice) and not args.no_voice,
+                      model=config.PET_VOICE_MODEL, player=config.PET_VOICE_PLAYER,
+                      sink=config.PET_AUDIO_SINK, play_url=client.base_url+AUDIO_PLAY_PATH,
+                      stop_url=client.base_url+AUDIO_STOP_PATH), priority=70)
+        fault = FaultLatch()
+        coordinator = owners.own(Coordinator(client, voice, identity, control_client=control, mode=args.mode,
+                                  motion_enabled=args.body_expressions and not args.no_emote,
+                                  continuity=memory.interaction_history(), transport_source="robot WebSocket",
+                                  fault_latch=fault), priority=100)
+        heard = EventInbox()
+        inputs = owners.own(InputWorker(client.base_url, args.perception_url, heard,
+                             use_camera=not args.no_camera, realtime=realtime), priority=80)
+        mind = None
+        mind_error = None
+        if not args.no_llm:
+            try:
+                mind = owners.own(MindWorker(build_pet_brain(args.sim), identity), priority=60)
+            except Exception as exc:
+                mind_error = str(exc)[:240]
+        ears = None
+        if config.PET_STT and not args.no_stt:
+            ears = build_ears(client.base_url+AUDIO_STREAM_PATH, config.WHISPER_MODEL,
+                              lambda text: _latest(heard, {"text": text, "timestamp": time.time(), "source": "microphone",
+                                                           "control_epoch": realtime.health().get("control_epoch")}),
+                              wake_word=config.PET_WAKE_WORD or None,
+                              device=config.WHISPER_DEVICE, compute_type=config.WHISPER_COMPUTE,
+                              suppress=voice.listening_suppressed,
+                              playback_epoch=lambda: (voice.listening_epoch, realtime.health().get("boot_id"),
+                                                      realtime.health().get("control_epoch")))
+            if ears:
+                owners.own(ears, close=ears.stop, priority=70)
+        dashboard = owners.own(Dashboard(client.base_url, args.dashboard), priority=50)
+        guard = owners.own(ProgressGuard(realtime.fence_commands,
+            getattr(control, "emergency_stop", control.stop), fault=fault), priority=110)
+        latest_status, last_state = {}, {}
+        def publish_final():
+            state = {**last_state, **coordinator.snapshot()}
+            state.update(name=identity.name, character=identity.character,
+                         pi_clock=latest_status.get("_clock"),
+                         progress=guard.health(), persistence=memory.health())
+            dashboard.push(state)
+            memory.log(state)
+        owners.own(coordinator, close=publish_final, priority=99)
+        generation = 0
+        last_boot = None
+        last_control_epoch = None
+        started, last_publish = time.monotonic(), 0.0
+        tick, think_ms = 0, None
+        print(f"{identity.name}: {args.mode} companionship. Body expressions {'requested' if args.body_expressions else 'disabled'}.")
+        print(f"Local controls and readiness: {client.base_url}/sim — say/type hello, stop, resume, or let's play.")
+        print("Hardware validation pending. No autonomous translation. Ctrl+C requests a software stop.")
+        guard.start()
         inputs.start()
         if ears:
             ears.start()
         while not (args.max_ticks and tick >= args.max_ticks) and not (args.duration and time.monotonic()-started >= args.duration):
+            if fault.reason is not None:
+                coordinator.tick()  # adopt the terminal latch on its owner thread
+                exit_code = 1
+                break
             tick += 1
             if hasattr(inputs, "failures"):
                 try:
@@ -316,30 +347,22 @@ def main(argv=None) -> int:
                              audio=voice.health(), hearing=ears.health() if ears else {"available": False, "ignored_reason": "disabled or local Whisper model unavailable"}, mind={"available": mind is not None,
                                  "busy": bool(mind and mind.busy), "failure_reason": mind_error,
                                  "provenance": "simulated" if args.sim else "real"})
+                state.update(persistence=memory.health(), progress=guard.health())
+                last_state = state
                 dashboard.push(state)
-                if log:
-                    log.write(json.dumps(state)+"\n")
-                    log.flush()
+                memory.log(state)
                 last_publish = now
+            guard.checkpoint()
             time.sleep(0.05)
+    except ShutdownRequested as exc:
+        exit_code = 128+exc.signum
     except KeyboardInterrupt:
         pass
     finally:
-        coordinator.close()
-        inputs.close()
-        if ears:
-            ears.stop()
-        if mind:
-            mind.close()
-        voice.close()
-        dashboard.close()
-        client.close()
-        control.close()
-        memory.close()
-        if log:
-            log.write(json.dumps(coordinator.snapshot())+"\n")
-            log.close()
-    return 0
+        owners.close()
+        for error in owners.errors:
+            print("Companion cleanup failure: " + error)
+    return exit_code
 
 
 if __name__ == "__main__":

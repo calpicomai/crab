@@ -27,32 +27,35 @@ class MemoryStore:
         if path != ":memory:":
             Path(path).absolute().parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if version > SCHEMA_VERSION:
+        try:
+            self._conn.row_factory = sqlite3.Row
+            version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise ValueError(f"unsupported memory schema {version}; original database preserved")
+            exists = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'"
+            ).fetchone()
+            if exists and version < SCHEMA_VERSION:
+                self.migration_backup = self.backup("pre-v2")
+            with self._conn:
+                self._conn.execute("""
+                    CREATE TABLE IF NOT EXISTS episodes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, mood TEXT,
+                        pose TEXT, distance_cm REAL, action TEXT, observation TEXT, note TEXT
+                    )
+                """)
+                columns = {row[1] for row in self._conn.execute("PRAGMA table_info(episodes)")}
+                additions = {
+                    "observed_json": "TEXT", "inferred_context": "TEXT", "narrative": "TEXT",
+                    "source": "TEXT NOT NULL DEFAULT 'legacy_unverified'",
+                }
+                for name, declaration in additions.items():
+                    if name not in columns:
+                        self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
+                self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        except BaseException:
             self._conn.close()
-            raise ValueError(f"unsupported memory schema {version}; original database preserved")
-        exists = self._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodes'"
-        ).fetchone()
-        if exists and version < SCHEMA_VERSION:
-            self.migration_backup = self.backup("pre-v2")
-        with self._conn:
-            self._conn.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, mood TEXT,
-                    pose TEXT, distance_cm REAL, action TEXT, observation TEXT, note TEXT
-                )
-            """)
-            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(episodes)")}
-            additions = {
-                "observed_json": "TEXT", "inferred_context": "TEXT", "narrative": "TEXT",
-                "source": "TEXT NOT NULL DEFAULT 'legacy_unverified'",
-            }
-            for name, declaration in additions.items():
-                if name not in columns:
-                    self._conn.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
-            self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            raise
 
     def backup(self, label: str = "backup") -> str | None:
         if self.path == ":memory:":

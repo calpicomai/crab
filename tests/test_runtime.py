@@ -83,9 +83,13 @@ class RuntimeHTTPTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.client = ASGIClient(server.app)
+        # Keep the lifespan's loop alive. asyncio.run(__aenter__()) finalizes
+        # the async generator immediately and shuts the app down before requests.
+        lifespan_loop = asyncio.new_event_loop()
+        self.addCleanup(lifespan_loop.close)
         lifespan = server.lifespan(server.app)
-        asyncio.run(lifespan.__aenter__())
-        self.addCleanup(lambda: asyncio.run(lifespan.__aexit__(None, None, None)))
+        lifespan_loop.run_until_complete(lifespan.__aenter__())
+        self.addCleanup(lambda: lifespan_loop.run_until_complete(lifespan.__aexit__(None, None, None)))
 
     def command(self, **kwargs):
         lease = self.client.post(CONTROL_LEASE_PATH).json()

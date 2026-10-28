@@ -20,6 +20,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.now = 100.0
         self.store = TelemetryStore(clock=lambda: self.now)
         for target, name, value in ((server, "_telemetry", self.store),
+                                    (server, "_shutdown", None),
                                     (server, "sim_world", None)):
             active = patch.object(target, name, value)
             active.start()

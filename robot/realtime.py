@@ -63,13 +63,18 @@ class RealtimeHub:
     EVENT_LIMIT = 32
 
     def __init__(self, *, boot_id_fn, epoch_fn, status_fn, dispatch_fn, lease_fn, stop_fn,
-                 clear_events_fn=lambda: None,
+                 clear_events_fn=lambda: None, worker_fn=None, stop_worker_fn=None, stop_latch_fn=None,
                  heartbeat_timeout_s=HEARTBEAT_TIMEOUT_S,
                  status_interval_s=STATUS_INTERVAL_S, send_timeout_s=1.0):
         self.boot_id_fn, self.status_fn = boot_id_fn, status_fn
         self.epoch_fn = epoch_fn
         self.dispatch_fn, self.lease_fn, self.stop_fn = dispatch_fn, lease_fn, stop_fn
         self.clear_events_fn = clear_events_fn
+        self.worker_fn = worker_fn
+        self.stop_worker_fn = stop_worker_fn
+        # When supplied, this callback is a synchronous control-only fence and
+        # returns a truthful latch-only response. stop_fn then completes it.
+        self.stop_latch_fn = stop_latch_fn
         self.heartbeat_timeout_s = heartbeat_timeout_s
         self.status_interval_s = status_interval_s
         self.send_timeout_s = send_timeout_s
@@ -249,6 +254,35 @@ class RealtimeHub:
             with self._lock:
                 self._command_running = False
 
+    def _submit(self, function, *args):
+        if self.worker_fn is not None:
+            return self.worker_fn(function, *args)
+        return asyncio.get_running_loop().run_in_executor(None, function, *args)
+
+    def _submit_stop(self):
+        response = self.stop_latch_fn() if self.stop_latch_fn is not None else None
+        operation = self.stop_fn if response is None else lambda: self.stop_fn(response)
+        try:
+            future = (self.stop_worker_fn(operation) if self.stop_worker_fn is not None
+                      else self._submit(operation))
+        except Exception:
+            if response is None:
+                raise
+            logger.warning("STOP latched; completion worker unavailable", exc_info=True)
+            future = asyncio.get_running_loop().create_future()
+            future.set_result(response)
+            return future
+        if response is None:
+            return future
+
+        async def completion():
+            try:
+                return await future
+            except Exception:
+                logger.warning("STOP latched; optional completion failed", exc_info=True)
+                return response
+        return asyncio.create_task(completion())
+
     async def _command(self, session, request, future):
         try:
             response = await asyncio.shield(future)
@@ -263,7 +297,7 @@ class RealtimeHub:
 
     async def _stop_request(self, session, request):
         try:
-            response = await asyncio.to_thread(self.stop_fn)
+            response = await self._submit_stop()
             response.command_id = request.command.command_id
             self._ack(session, ResultMessage(**session.envelope, request_id=request.request_id, response=response))
         except Exception:
@@ -315,14 +349,23 @@ class RealtimeHub:
                 elif isinstance(request, LeaseRequest):
                     with self._lock:
                         generation = session.generation
-                    lease = await asyncio.to_thread(self.lease_fn, request.control_epoch,
+                    lease = await self._submit(self.lease_fn, request.control_epoch,
                         lambda issued: self._register_lease(session, generation, issued))
                     lease.pop("boot_id", None)
                     self._ack(session, LeaseMessage(**session.envelope, request_id=request.request_id, **lease))
                 elif isinstance(request, CommandRequest):
                     if request.action == Action.STOP:
                         if stop_task is not None and not stop_task.done():
-                            self._error(session, request.request_id, "stop_pending", "stop is already being latched")
+                            if self.stop_latch_fn is None:
+                                self._error(session, request.request_id, "stop_pending", "stop is already being latched")
+                            else:
+                                # A prior optional completion may still be
+                                # blocked after an explicit RESUME. Re-latch
+                                # every fresh STOP without queueing cleanup.
+                                response = self.stop_latch_fn()
+                                response.command_id = request.command.command_id
+                                self._ack(session, ResultMessage(**session.envelope,
+                                    request_id=request.request_id, response=response))
                         else:
                             # Invalidate admission before scheduling any worker;
                             # an older queued RESUME can no longer clear STOP.
@@ -348,18 +391,22 @@ class RealtimeHub:
                         # Even an immediate disconnect cannot cancel admission
                         # before its worker finally releases the busy flag.
                         try:
-                            future = asyncio.get_running_loop().run_in_executor(
-                                None, self._dispatch_worker, session, generation, request)
+                            future = self._submit(self._dispatch_worker, session, generation, request)
                         except Exception:
                             with self._lock:
                                 self._command_running = False
-                            raise
+                            self._error(session, request.request_id, "busy", "dispatch worker unavailable; command not queued")
+                            continue
                         command_task = asyncio.create_task(self._command(session, request, future))
         finally:
             with self._lock:
                 session.live = False
                 session.generation += 1
                 session.leases.clear()
+            if self.stop_latch_fn is not None:
+                # Disconnect/heartbeat expiry must win before waiting for any
+                # earlier optional STOP completion or cancelled command waiter.
+                self.stop_latch_fn()
             # Retain STOP until completion, but never await a vendor gait here.
             if command_task is not None and not command_task.done():
                 command_task.cancel()
@@ -419,7 +466,7 @@ class RealtimeHub:
             # Ownership stays reserved through STOP. An old disconnect cannot
             # stop a replacement owner or let its delayed resume cross STOP.
             try:
-                await asyncio.to_thread(self.stop_fn)
+                await self._submit_stop()
             finally:
                 with self._lock:
                     if self._owner is session:
@@ -441,4 +488,4 @@ class RealtimeHub:
         # failed external driver or claim the worker has stopped if it has not.
         sampler = self._sampler
         if sampler is not None:
-            await asyncio.to_thread(sampler.join, 1.0)
+            await self._submit(sampler.join, 1.0)

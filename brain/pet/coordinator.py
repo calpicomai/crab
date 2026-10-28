@@ -11,7 +11,6 @@ import math
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from shared.companion import Intent, IntentionName, IntentionStatus, MindOutput
@@ -21,6 +20,7 @@ from shared.clock import capture_age
 from . import commands, expressions
 from .brain import THOUGHT_TTL_S
 from .mood import Mood
+from .lifecycle import FaultLatch, SingleFlightOwner
 
 
 def _dict(value):
@@ -42,7 +42,8 @@ class Coordinator:
 
     def __init__(self, client, voice, identity=None, *, clock=time.monotonic,
                  wall_clock=time.time, control_client=None, mode="interaction",
-                 motion_enabled=False, continuity=None, transport_source="robot HTTP"):
+                 motion_enabled=False, continuity=None, transport_source="robot HTTP",
+                 fault_latch=None):
         if mode not in {"interaction", "quiet"}:
             raise ValueError("only interaction and quiet companionship are implemented")
         self.client, self.control_client = client, control_client or client
@@ -56,9 +57,12 @@ class Coordinator:
         self._captured_engagements = self.mood.interactions
         self._greeting_count = max(0, int(continuity.get("greetings", 0)))
         self._episode_reply = ""
-        self._motion_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-motion")
-        self._control_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-stop")
-        self._resume_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-resume")
+        self._motion_pool = SingleFlightOwner("companion-motion")
+        self._control_pool = SingleFlightOwner("companion-stop")
+        self._resume_pool = SingleFlightOwner("companion-resume")
+        self._fault = fault_latch or FaultLatch()
+        self._voice_stop_error = None
+        self._fence_error = None
         self._motion = self._control = self._resume = None
         self._resume_cancelled = None
         self._coalesced_stops = []
@@ -99,6 +103,13 @@ class Coordinator:
                         expires_at=now + max(0.01, min(float(ttl_s), 30.0)),
                         source=source, reason=reason, payload=payload or {})
         self._history.append(intent)
+        if self._closed:
+            self._finish(intent, "blocked", "companion closed; restart required")
+            return intent
+        if self._fault.reason is not None and kind != IntentionName.STOP:
+            self._apply_fault()
+            self._finish(intent, "blocked", self._fault.reason)
+            return intent
         if kind == IntentionName.STOP:
             self._stop(intent)
         elif self.stopped and kind != IntentionName.RESUME:
@@ -136,19 +147,44 @@ class Coordinator:
         self.target = None
         self._interaction_wall = self.wall_clock()
         self._cancel_pending(intent.reason or "stop")
-        self.voice.stop()
         if self._resume:
             self._finish(self._resume[0], "cancelled", "stop superseded resume")
             self._resume_cancelled.set()
         # Fence an RPC still acquiring a lease before issuing the independent
         # urgent HTTP stop. Cancelling a Future cannot kill an executing RPC.
         if hasattr(self.control_client, "cancel_commands"):
-            self.control_client.cancel_commands()
+            try:
+                self.control_client.cancel_commands()
+            except Exception as exc:
+                self._fence_error = str(exc)[:200]
         intent.status = IntentionStatus.ACTIVE
         if self._control:
             self._coalesced_stops.append(intent)
         else:
             self._control = (intent, self._control_pool.submit(self._send_stop))
+        # Optional audio never stands between a stop and transport fencing or
+        # independent Pi dispatch. Preserve a diagnostic if its cleanup fails.
+        self._stop_voice()
+
+    def _stop_voice(self):
+        try:
+            self.voice.stop()
+        except Exception as exc:
+            self._voice_stop_error = str(exc)[:200]
+
+    def _apply_fault(self):
+        if self._fault.reason is None:
+            return False
+        self.stopped = True
+        self.phase = "stopped"
+        self.target = None
+        self.blocked_reason = self._fault.reason
+        self._cancel_pending(self._fault.reason)
+        self._cancel_episode_event(self._fault.reason)
+        if self._resume:
+            self._finish(self._resume[0], "cancelled", self._fault.reason)
+            self._resume_cancelled.set()
+        return True
 
     def _send_stop(self):
         # A fresh bounded HTTP connection remains available after the normal
@@ -162,7 +198,7 @@ class Coordinator:
         outcome = _ResumeOutcome(dispatch_boot_id=dispatch_boot_id,
                                  dispatch_observed_at=dispatch_observed_at)
         try:
-            if cancelled.is_set():
+            if cancelled.is_set() or self._fault.reason is not None or self._closed:
                 outcome.error = "resume cancelled before dispatch"
             else:
                 # Preserve the event's original Pi epoch through queueing and
@@ -176,7 +212,7 @@ class Coordinator:
         finally:
             # This runs even after Coordinator.close(). A late RPC may have an
             # unknown physical outcome; only STOP is repeated as cleanup.
-            if cancelled.is_set():
+            if cancelled.is_set() or self._fault.reason is not None or self._closed:
                 try:
                     outcome.cleanup_stop = _dict(self._send_stop())
                 except Exception as exc:
@@ -187,6 +223,8 @@ class Coordinator:
         self._status_at = None
         self.target = None
         self.inputs["transport"] = self._missing(reason, source=self.transport_source).snapshot(self.wall_clock())
+        if self._apply_fault():
+            return  # the independent progress guard owns its one STOP attempt
         self.blocked_reason = reason
         resume_active = self._resume and self._resume[0].status != IntentionStatus.CANCELLED
         resume_pending = any(intent.kind == IntentionName.RESUME for intent in self._pending)
@@ -563,6 +601,8 @@ class Coordinator:
                 self._movements.append({"intention_id": intent.id, "at": self.wall_clock(),
                                         "response": result})
                 was_cancelled = intent.status == IntentionStatus.CANCELLED
+                if attr == "_resume" and self._fault.reason is not None:
+                    was_cancelled = True
                 if intent.kind == IntentionName.RESUME and result.get("ok") and not was_cancelled:
                     self._record_resume_epoch(intent, result, resume_outcome)
                 self._finish(intent, "cancelled" if was_cancelled else "completed" if result.get("ok") else "failed",
@@ -599,6 +639,9 @@ class Coordinator:
                     self._coalesced_stops.clear()
 
     def _execute(self, intent):
+        if self._apply_fault():
+            self._finish(intent, "blocked", self._fault.reason)
+            return True
         intent.status = IntentionStatus.ACTIVE
         kind = intent.kind.value
         if kind == "resume":
@@ -666,7 +709,10 @@ class Coordinator:
     def tick(self):
         if self._closed:
             return
+        self._apply_fault()
         self._poll()
+        if self._apply_fault():
+            return
         now = self.clock()
         self.mood.advance(now)
         if self.target and (now > self._target_until or now > self._visible_until):
@@ -682,7 +728,8 @@ class Coordinator:
         if self._pending:
             intent = max(self._pending, key=lambda item: item.priority)
             if self._execute(intent):
-                self._pending.remove(intent)
+                if intent in self._pending:
+                    self._pending.remove(intent)
         if self.stopped or now < self._phase_until:
             return
         if self.phase == "notice":
@@ -738,14 +785,28 @@ class Coordinator:
                 "inputs": self.inputs, "input_events": self._input_event_snapshot(),
                 "intentions": [i.model_dump(mode="json") for i in self._history],
                 "movements": list(self._movements), "audio": self.voice.health(),
+                "runtime_fault": self._fault.reason,
+                "cleanup": {"voice_stop_error": self._voice_stop_error, "fence_error": self._fence_error},
                 "motion_enabled": self.motion_enabled, "position": "unmeasured; no locomotion in milestone 1"}
 
     def close(self):
         if self._closed:
             return
-        self.request("stop", source="safety", reason="companion shutdown")
+        # Revoke future lease acquisition before abandoning any bounded owner.
+        # Real realtime calls have finite deadlines; a broken fake/native call
+        # may outlive close, and its physical result must remain unknown.
+        realtime = getattr(self.control_client, "realtime", None)
+        try:
+            if realtime is not None:
+                realtime.fence_commands("companion shutdown; restart required")
+            elif hasattr(self.control_client, "cancel_commands"):
+                self.control_client.cancel_commands()
+        except Exception as exc:
+            self._fence_error = str(exc)[:200]
+        if not self._apply_fault():
+            self.request("stop", source="safety", reason="companion shutdown")
         self._cancel_pending("companion shutdown")
-        self.voice.stop()
+        self._stop_voice()
         # The caller may close HTTP clients immediately after close(). Give the
         # separate control connection a bounded chance to acknowledge first.
         deadline = time.monotonic() + 1.5
@@ -755,6 +816,8 @@ class Coordinator:
                 time.sleep(0.005)
         if self._control:
             self._finish(self._control[0], "failed", "shutdown stop acknowledgement timed out; physical state unknown")
+            self._movements.append({"intention_id": self._control[0].id, "at": self.wall_clock(),
+                "outcome": "unknown", "reason": "shutdown STOP acknowledgement deadline exceeded; physical state unknown"})
         if self._motion:
             self._movements.append({"intention_id": self._motion[0].id, "at": self.wall_clock(),
                                     "outcome": "unknown", "reason": "shutdown before movement result; Pi stop requested"})

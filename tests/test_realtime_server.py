@@ -154,6 +154,35 @@ class RealtimeHubTests(unittest.IsolatedAsyncioTestCase):
         await other.message("status")
         self.assertEqual(len(set(self.sample_threads)), 1)
 
+    async def test_rejected_worker_submission_releases_busy_and_preserves_the_unconsumed_lease(self):
+        from robot.lifecycle import DaemonWorkers
+        socket, _, hello = await self.connect()
+        await socket.send(hello, "lease", control_epoch=self.control_epoch)
+        issued = await socket.message("lease")
+        workers = DaemonWorkers(capacity=1)
+        self.hub.worker_fn = workers.submit
+        release = threading.Event()
+        blocked = workers.submit(release.wait, 2)
+        payload = {"lease_id": issued["lease_id"], "command_id": "not-admitted"}
+        try:
+            await socket.send(hello, "command", action="resume", payload=payload)
+            rejected = await socket.message("error")
+            self.assertEqual(rejected["code"], "busy")
+            self.assertEqual(self.executions, [])
+            self.assertFalse(self.hub.health()["command_in_flight"])
+            release.set()
+            await blocked
+            # Submission rejected before dispatch: the same still-current lease
+            # and command ID have not been consumed and may be submitted once.
+            await socket.send(hello, "command", action="resume", payload=payload)
+            response = await socket.message("result")
+            self.assertTrue(response["response"]["ok"])
+            self.assertEqual(self.executions, [Action.RESUME])
+            self.assertFalse(self.hub.health()["command_in_flight"])
+        finally:
+            release.set()
+            await blocked
+
     async def test_slow_reader_disconnects_and_status_slot_replaces(self):
         socket, task, _ = await self.connect(Socket(block_type="status"))
         await socket.send_entered.wait()
