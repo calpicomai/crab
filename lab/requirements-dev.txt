@@ -1,0 +1,3 @@
+-r requirements.txt
+# Browser acceptance only; the normal viewer needs no automation package.
+playwright==1.62.0

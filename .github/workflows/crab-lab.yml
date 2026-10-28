@@ -1,0 +1,49 @@
+name: Crab Lab
+
+on:
+  push:
+    branches: [main]
+    paths: ['lab/**', '.github/workflows/crab-lab.yml']
+  pull_request:
+    paths: ['lab/**', '.github/workflows/crab-lab.yml']
+
+jobs:
+  physics:
+    name: Physics and episodes (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated Lab dependencies
+        run: python -m pip install -r lab/requirements.txt
+      - name: Check dependencies
+        run: python -m pip check
+      - name: Run actual CPU physics and API regressions
+        run: python -m unittest discover -s lab/tests -p 'test_*.py' -v
+      - name: Run a bounded synthetic episode
+        run: python -m lab episode --seconds 3 --seed 1 --mode crawl
+      - name: Evaluate fixed synthetic conditions
+        run: python -m lab evaluate --seconds 4 --seeds 1
+
+  browser:
+    name: Browser and actual local physics
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated browser test dependencies
+        run: python -m pip install -r lab/requirements-dev.txt
+      - name: Install test browser on the ephemeral runner
+        run: python -m playwright install --with-deps chromium
+      - name: Exercise the maintained Lab UI against owned real physics
+        run: python lab/tests/browser_lab.py --serve

@@ -1,0 +1,54 @@
+{
+  "model_version": "crab-provisional-0.1",
+  "status": "Provisional simulation, not a measured digital twin or hardware acceptance",
+  "source_hints": {
+    "inspected_date": "2026-10-27",
+    "url": "https://raw.githubusercontent.com/sunfounder/picrawler/main/picrawler/picrawler.py",
+    "constants_as_written": {"A": 48, "B": 78, "C": 33, "body_side": 77},
+    "interpretation": "Conventionally millimetres; source-code hints only. Joint centres, mapping and assembly revision are unverified. No vendor code or motion frames copied."
+  },
+  "geometry_m": {
+    "coxa": 0.033, "femur": 0.048, "tibia": 0.078,
+    "body_side": 0.077, "body_half_height": 0.014,
+    "link_radius": 0.004, "foot_radius": 0.006,
+    "status": "Estimated primitive mapping of source hints; radii, height, axes and pivot placements are estimated"
+  },
+  "estimated_mass_kg": {
+    "body": 0.35, "coxa": 0.015, "femur": 0.025, "tibia": 0.020, "foot": 0.005,
+    "uncertainty_multiplier_range": [0.5, 2.0],
+    "status": "All masses estimated; inertias and centres of mass are estimated from uniform primitive shapes by MuJoCo, not measured"
+  },
+  "estimated_joint_limits_rad": {
+    "yaw": [-0.6, 0.6], "hip": [-0.6, 1.1], "knee": [0.3, 2.2],
+    "estimated_stop_solref": [0.005, 1.0], "estimated_stop_solimp": [0.95, 0.99, 0.001],
+    "status": "Simulation pivot conventions and conservative controller workspace only; compliant joint stops are estimated, not vendor angles or certified mechanical limits"
+  },
+  "estimated_actuator": {
+    "kp_nm_rad": 12.0, "kv_nm_s_rad": 0.35, "torque_limit_nm": 0.45,
+    "target_slew_rad_s": 1.2, "command_delay_s": 0.02,
+    "command_deadband_rad": 0.004, "joint_damping_nm_s_rad": 0.015,
+    "armature_kg_m2": 0.0002, "joint_frictionloss_nm": 0.003,
+    "status": "Estimated position-servo surrogate with delay, deadband, slew and torque saturation; no calibrated motor/electrical/backlash model",
+    "torque_uncertainty_range_nm": [0.15, 0.8], "delay_uncertainty_range_s": [0.01, 0.08]
+  },
+  "estimated_contact": {
+    "flat_friction": 0.8, "low_friction": 0.06,
+    "torsional_friction": 0.005, "rolling_friction": 0.0001,
+    "solref": [0.01, 1.0], "solimp": [0.9, 0.95, 0.001],
+    "status": "All friction and compliance estimated; rigid primitive contacts do not model real rubber feet"
+  },
+  "simulation": {"dt_s": 0.002, "gravity_m_s2": 9.81, "arena_half_width_m": 1.0,
+    "robot_self_collision": false,
+    "self_collision_status": "Robot-to-robot collisions disabled in this provisional model; workspace is not certified collision-free"},
+  "estimated_sensor": {
+    "sonar_period_s": 0.05, "sonar_delay_s": 0.02,
+    "sonar_noise_std_m": 0.002, "sonar_max_range_m": 2.0,
+    "status": "Synthetic delayed noisy forward ray against static arena, not a validated ultrasonic sensor model; no-echo is unknown"
+  },
+  "controller": {
+    "version": "crab-open-loop-0.1", "nominal_foot_local_m": [0.095, 0.0, -0.085],
+    "period_s": 3.2, "stride_m": 0.012, "swing_height_m": 0.008,
+    "startup_stand_s": 0.6,
+    "status": "Crab-owned independent IK and procedural sequential swing/stance; no learned policy, balance feedback, odometry, navigation or recovery"
+  }
+}
