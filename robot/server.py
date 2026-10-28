@@ -330,6 +330,7 @@ def camera_stream() -> StreamingResponse:
         _observation_stream(camera.mjpeg_frames()),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"X-Crab-Provenance": "simulated" if camera.simulate else "real",
+                 "X-Crab-Boot-Id": leases.boot_id,
                  "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
 
@@ -344,6 +345,7 @@ def camera_frame() -> Response:
         return Response(status_code=503, content="no fresh frame", headers={"Cache-Control": "no-store"})
     return Response(content=frame.data, media_type="image/jpeg", headers={
         "X-Crab-Provenance": frame.provenance,
+        "X-Crab-Boot-Id": leases.boot_id,
         "X-Crab-Captured-At": str(frame.captured_at),
         "X-Crab-Sequence": str(frame.sequence),
         "X-Crab-Frame-Age-Ms": str(round(max(0, time.time()-frame.captured_at)*1000, 1)),

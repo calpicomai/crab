@@ -126,7 +126,8 @@ class PerceptionEngine:
         else:
             simulated = camera_health.provenance == "simulated" or all(name in {"dummy", "simblob"} for name in successful)
             interpretation = InputHealth(available=True, provenance="simulated" if simulated else camera_health.provenance,
-                                          captured_at=camera_health.captured_at, received_at=time.time(), max_age_s=2,
+                                          captured_at=camera_health.captured_at, clock=camera_health.clock,
+                                          received_at=time.time(), max_age_s=2,
                                           source=",".join(successful))
         inputs = {"camera": camera_health, "interpretation": interpretation}
         for name, reason in failures.items():

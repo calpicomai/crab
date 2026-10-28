@@ -1,4 +1,4 @@
-# Companion capture timing — 2026-10-26
+# Companion capture timing — updated 2026-10-28
 
 The deployed `b505086` client compared Pi capture timestamps directly with the
 Jetson wall clock and required a nonnegative age, with no clock-offset allowance.
@@ -6,6 +6,25 @@ A Pi about 30 ms ahead therefore disconnected every fresh status sample. The
 reported request/response measurements bounded Pi-minus-Jetson offset at roughly
 +23.5 to +36.3 ms with about 12 ms RTT; they did not demonstrate a four-second
 clock error. NTP synchronization alone does not imply identical wall clocks.
+
+The separate perception MJPEG reader now uses the same bounded clock policy.
+It makes a small read-only `/sim/clock` GET from its existing stream owner, at
+most once per second, and binds calibration to the matching `X-Crab-Boot-Id`
+camera response header. It opens no control WebSocket or extra capture consumer.
+Original capture and receipt timestamps plus the clock anchor survive decode,
+interpretation health and Coordinator use. Its existing two-second frame
+freshness limit remains unchanged. A missing/incompatible stream boot, excessive
+offset/uncertainty, stale/future/replayed/out-of-order frame, local clock step or
+decoder result from an invalidated connection stays unavailable. Same-boot
+reconnect retains the replay watermark; a verified new boot resets it.
+
+The clock response is limited to 4KiB and bounded raw chunks. Checks run between
+chunks; socket timeouts are inactivity bounds, not hard DNS/header/whole-request
+deadlines. A late response cannot create a valid anchor. Tests use fake clocks
+and an owned loopback MJPEG server, including ±30ms skew and delayed inference;
+these are software regressions, not physical camera, network or model benchmarks.
+Update Pi and brain together: older servers lacking the boot header fail visibly
+rather than falling back to uncalibrated cross-machine timestamps.
 
 ## Bounded measurement
 

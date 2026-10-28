@@ -38,9 +38,11 @@ verification are separate fields. Real provenance does not prove verification.
 
 The bridge measures its own Pi clock anchor using `/sim/clock`, then GETs
 `/sim/state`. Default1Hz, maximum5Hz, one HTTP worker/connection, one latest result
-slot, response cap256KiB, inputs cap32, bounded reasons/IDs and request timeout
-0.5s. Each read also has an elapsed deadline; a blocked read can overshoot it by
-one transport timeout. Worker close joins at most0.5s and fences late output.
+slot, response cap256KiB/4096 raw chunks, inputs cap32, bounded reasons/IDs and
+request inactivity timeout0.5s. Elapsed-time/cancellation checks run between raw
+body chunks without coalescing or hiding empty chunks. DNS, header parsing and
+an in-progress transport read do not have a hard whole-request deadline from
+this timeout alone. Worker close joins at most0.5s and fences late output.
 A blocked resolver may outlive that join in its daemon thread; it cannot publish
 late data or acquire hardware authority. Failures and replacements are counted.
 

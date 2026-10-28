@@ -121,6 +121,9 @@ class JetsonLatestFrameTests(unittest.TestCase):
     def reader(self):
         with patch("brain.perception.camera.threading.Thread"):
             reader = MjpegCamera("http://127.0.0.1:1/camera/stream")
+        wall, mono = time.time(), time.monotonic()
+        reader._accept_clock({"server_at": wall, "server_boot_id": "test-boot"}, wall, mono, wall, mono)
+        reader._bind_stream({"X-Crab-Boot-Id": "test-boot"})
         self.addCleanup(reader.close)
         return reader
 

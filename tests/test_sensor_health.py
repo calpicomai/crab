@@ -86,12 +86,17 @@ class SensorHealthTests(unittest.TestCase):
 
     def stream_reader(self):
         with patch("brain.perception.camera.threading.Thread"):
-            return MjpegCamera("http://127.0.0.1:1/camera/stream")
+            reader = MjpegCamera("http://127.0.0.1:1/camera/stream")
+        wall, mono = time.time(), time.monotonic()
+        reader._accept_clock({"server_at": wall, "server_boot_id": "test-boot"}, wall, mono, wall, mono)
+        reader._bind_stream({"X-Crab-Boot-Id": "test-boot"})
+        return reader
 
     def test_stream_start_and_dropout_never_generate_frame(self):
         reader = self.stream_reader()
         self.assertIsNone(reader.read())
-        reader._store(np.zeros((2, 2, 3), dtype=np.uint8), captured_at=time.time(), provenance="real")
+        reader._store(np.zeros((2, 2, 3), dtype=np.uint8), captured_at=time.time(), provenance="real",
+                      clock=reader._clock, boot_id="test-boot")
         self.assertIsNotNone(reader.read())
         reader._invalidate("network lost")
         self.assertIsNone(reader.read())
@@ -104,7 +109,7 @@ class SensorHealthTests(unittest.TestCase):
         Image.new("RGB", (2, 2)).save(image, "JPEG")
         stamp = time.time()
         header = (f"--frame\r\nContent-Type: image/jpeg\r\nX-Crab-Captured-At: {stamp}\r\n"
-                  "X-Crab-Provenance: simulated\r\n\r\n").encode()
+                  "X-Crab-Provenance: simulated\r\nX-Crab-Sequence: 1\r\n\r\n").encode()
         buf = reader._extract_frames(header[:20], Image)
         buf = reader._extract_frames(buf + header[20:] + image.getvalue()[:30], Image)
         reader._extract_frames(buf + image.getvalue()[30:], Image)

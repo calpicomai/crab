@@ -21,6 +21,7 @@ from shared.clock import CaptureClock, capture_age, finite_number, MAX_ANCHOR_AG
 from shared.local import require_local_url
 
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_RESPONSE_CHUNKS = 4096
 MAX_INPUTS = 32
 MAX_UINT64 = 2**64 - 1
 
@@ -470,9 +471,10 @@ def age_for_publish(snapshot: ObservationSnapshot, now_mono: float) -> Observati
 class HTTPObserver:
     """One explicit worker, two allowlisted GETs per poll, one latest result slot.
 
-    timeout_s bounds each transport operation; each request also has an elapsed
-    monotonic budget of timeout_s. A blocked read can overshoot that budget by
-    at most one transport timeout. close() bounds joining and fences late output.
+    timeout_s is a transport inactivity limit; each request also checks elapsed
+    monotonic time between raw body chunks. DNS, header parsing and an in-progress
+    read have no hard whole-request deadline here. close() bounds joining and
+    fences late output.
     No constructor I/O. poll_once(client) is for deterministic fake-HTTP tests;
     it cannot overlap another poll or the worker.
     """
@@ -524,11 +526,17 @@ class HTTPObserver:
             data = bytearray()
             # iter_raw avoids accepting compressed decompression bombs; HTTP
             # decoding remains disabled and unsupported encodings are rejected.
-            chunks = (response.content,) if response.is_stream_consumed else response.iter_raw(chunk_size=16384)
-            for chunk in chunks:
+            # Use the raw stream directly: iter_raw() hides empty chunks and a
+            # chunk_size also coalesces tiny chunks before checks can run.
+            # The socket timeout is inactivity, not a hard bound
+            # on DNS, headers or an in-progress read; inspect between raw reads.
+            chunks = (response.content,) if response.is_stream_consumed else response.stream
+            for count, chunk in enumerate(chunks, 1):
                 elapsed = self._mono() - started
                 if self._stop.is_set() or elapsed < 0 or elapsed > self.timeout_s:
                     raise ValueError("observation request deadline exceeded or observer closed")
+                if count > MAX_RESPONSE_CHUNKS:
+                    raise ValueError("observation response chunk count exceeds bound")
                 if len(data) + len(chunk) > MAX_RESPONSE_BYTES:
                     raise ValueError("observation response size exceeds bound")
                 data.extend(chunk)
