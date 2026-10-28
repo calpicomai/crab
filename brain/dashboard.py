@@ -29,9 +29,16 @@ class Dashboard:
         self._thread = None
         self._vitals = VitalsSampler("jetson")
         if self.url:
-            self._vitals.start()
-            self._thread = threading.Thread(target=self._run, daemon=True, name="dashboard-publisher")
-            self._thread.start()
+            try:
+                self._vitals.start()
+                self._thread = threading.Thread(target=self._run, daemon=True, name="dashboard-publisher")
+                self._thread.start()
+            except BaseException:
+                try:
+                    self.close()
+                except BaseException:
+                    pass  # preserve the startup failure, including unstarted joins
+                raise
 
     @property
     def enabled(self) -> bool:
@@ -40,8 +47,8 @@ class Dashboard:
     def push(self, state: dict) -> None:
         if not self.url:
             return
-        # The full history stays in the local log. Only the visible window travels
-        # to the dashboard, and nested values cannot mutate under the worker.
+        # Local logging is best-effort under disk stalls. Only the visible window
+        # travels to the dashboard; nested values cannot mutate under its worker.
         visible = dict(state)
         for key, limit in (("intentions", 12), ("movements", 6)):
             if isinstance(visible.get(key), list):
@@ -110,6 +117,6 @@ class Dashboard:
         with self._condition:
             self._closed = True
             self._condition.notify()
-        if self._thread:
+        if self._thread and self._thread.ident is not None:
             self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._vitals.close(timeout=max(0.0, deadline - time.monotonic()))

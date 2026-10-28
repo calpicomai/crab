@@ -99,6 +99,7 @@ class RealtimeClient:
         self._closed = threading.Event()
         self._ready = threading.Event()
         self._started = False
+        self._command_fence = None
         self._connection = None
         self._boot_id = self._session_id = None
         self._control_epoch = None
@@ -127,8 +128,12 @@ class RealtimeClient:
             if self._started or self._closed.is_set():
                 return
             self._started = True
-            self._sender.start()
-            self._reader.start()
+            try:
+                for thread in (self._sender, self._reader):
+                    thread.start()
+            except BaseException:
+                self._closed.set()
+                raise
 
     def _notify_status(self, status, reason=None):
         if self.on_status:
@@ -192,6 +197,27 @@ class RealtimeClient:
         """Synchronously fence old lease/RPC generations before HTTP STOP."""
         with self._lock:
             self._cancel_commands_locked(reason)
+
+    def fence_commands(self, reason="companion terminal fault"):
+        """Permanently revoke authority and stop heartbeat/reconnect.
+
+        Socket shutdown avoids a protocol close/send lock and gives the Pi its
+        independent disconnect-stop path. Reader ownership performs final close.
+        """
+        self._closed.set()
+        with self._lock:
+            if self._command_fence is None:
+                self._command_fence = str(reason)[:240]
+            self._failure_reason = self._command_fence
+            self._ready.clear()
+            self._cancel_commands_locked(self._command_fence)
+            connection = self._connection
+        sock = getattr(connection, "socket", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def _cancel_commands_locked(self, reason):
         self._generation += 1
@@ -412,6 +438,7 @@ class RealtimeClient:
                 valid = (self._connection is dispatch.connection and self._session_id == dispatch.session_id
                          and (dispatch.generation is None or dispatch.generation == self._generation))
                 if dispatch.pending is not None:
+                    valid = valid and self._command_fence is None
                     valid = valid and self._pending.get(dispatch.pending.request_id) is dispatch.pending
                     age = capture_age(self._status.get("observed_at") if self._status else None, self._clock)
                     valid = valid and self._clock is not None and age is not None and age <= self.status_timeout_s
@@ -437,7 +464,7 @@ class RealtimeClient:
                            action=action, command_id=command_id, control_epoch=control_epoch)
         with self._lock:
             age = capture_age(self._status.get("observed_at") if self._status else None, self._clock)
-            if (self._closed.is_set() or self._connection is not connection or not self._ready.is_set()
+            if (self._command_fence is not None or self._closed.is_set() or self._connection is not connection or not self._ready.is_set()
                     or generation != self._generation or self._last_status_mono is None
                     or self._clock is None or age is None or age > self.status_timeout_s
                     or time.monotonic() - self._last_status_mono > self.status_timeout_s):
@@ -474,6 +501,8 @@ class RealtimeClient:
             started = time.monotonic()
             deadline = started + min(timeout, 30.0)
             with self._lock:
+                if self._command_fence is not None:
+                    raise RealtimeUnavailable(self._command_fence + "; command not dispatched")
                 if (self._connection is None or not self._ready.is_set() or self._closed.is_set()
                         or self._last_status_mono is None
                         or started - self._last_status_mono > self.status_timeout_s):
@@ -519,11 +548,11 @@ class RealtimeClient:
                     "status_capture_age_s": capture_age(stamp, self._clock) if self._clock else None,
                     "clock": self._clock.model_dump() if self._clock else None,
                     "pending_requests": len(self._pending), "send_queue_depth": self._outgoing.qsize(),
-                    "callback_error": self._callback_error}
+                    "callback_error": self._callback_error, "command_fence": self._command_fence}
 
     def close(self):
         self._closed.set()
-        self.cancel_commands("WebSocket client closed")
+        self.fence_commands("WebSocket client closed")
         with self._lock:
             connection, started = self._connection, self._started
         if connection is not None:
@@ -531,5 +560,5 @@ class RealtimeClient:
         if started:
             deadline = time.monotonic() + 2.0
             for thread in (self._reader, self._sender):
-                if thread is not threading.current_thread():
+                if thread.ident is not None and thread is not threading.current_thread():
                     thread.join(timeout=max(0.0, deadline - time.monotonic()))

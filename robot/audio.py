@@ -386,7 +386,7 @@ class PiSpeaker:
             return None, "playback cancelled"
         return run_audio_process(command, on_start=self._register_process, **kwargs)
 
-    def self_test(self, play: bool = False) -> dict:
+    def self_test(self, play: bool = False, *, authorize: Callable[[], str | None] | None = None) -> dict:
         """Report readiness without sound by default; explicit play emits one quiet cue."""
         report = {"speaker": self.health(), "user": getpass.getuser(), "uid": os.geteuid(),
                   "groups": os.getgroups(), "play_requested": play,
@@ -414,7 +414,9 @@ class PiSpeaker:
             for path in glob.glob("/dev/snd/*")[:32]
         }
         if play:
-            self.play(sound_wav("acknowledge"))
+            # Diagnostics can be slow. A network lifecycle guard is checked at
+            # the existing playback admission lock after those diagnostics.
+            self.play_result(sound_wav("acknowledge"), authorize=authorize)
             report["speaker"] = self.health()
         return report
 

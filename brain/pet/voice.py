@@ -81,7 +81,9 @@ class Voice:
         return {"enabled": self.enabled, "effects_enabled": self.effects_enabled,
                 "busy": self.busy, "listening_suppressed": self.listening_suppressed(),
                 "sink": self.sink, "simulate": self.simulate,
-                "reason": self._readiness_reason, "last_result": dict(self.last_result)}
+                "reason": self._readiness_reason, "last_result": dict(self.last_result),
+                "closed": self._closed,
+                "cancel_pending": bool(self._stop_thread and self._stop_thread.is_alive())}
 
     def _record(self, ok: bool, stage: str, reason: str | None = None, **extra) -> None:
         self.last_result = {"ok": ok, "stage": stage, "reason": bounded_error(reason) if reason else None,
@@ -130,7 +132,10 @@ class Voice:
         with self._lock:
             self._process = process
             if generation != self._generation:
-                process.terminate()
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass  # it exited between registration and cancellation
 
     def _cancelled(self, generation: int) -> bool:
         with self._lock:
@@ -221,8 +226,13 @@ class Voice:
             self._generation += 1
             self._sequence += 1
             self._pending_stop_sequence = self._sequence
-            if self._process is not None and self._process.poll() is None:
-                self._process.terminate()
+            try:
+                if self._process is not None and self._process.poll() is None:
+                    self._process.terminate()
+            except ProcessLookupError:
+                pass  # poll/terminate is inherently racy; remote stop still wins
+            except Exception as exc:
+                self._record(False, "cancelled", f"local process cancellation unconfirmed: {bounded_error(exc)}")
         if self.stop_url and not self.simulate:
             with self._lock:
                 if self._stop_thread is None or not self._stop_thread.is_alive():
@@ -234,8 +244,10 @@ class Voice:
         with self._lock:
             self._closed = True
         self.stop()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=1)
+        deadline = time.monotonic()+1.0
+        for thread in (self._thread, self._stop_thread):
+            if thread and thread.ident is not None and thread is not threading.current_thread():
+                thread.join(timeout=max(0.0, deadline-time.monotonic()))
 
     def _stop_remote(self) -> None:
         while True:

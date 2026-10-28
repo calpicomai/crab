@@ -250,10 +250,13 @@ class InputWorker:
             started = self._started
         if not started:
             return
-        if self.realtime is not None:
-            self.realtime.close()
         # Each worker owns/closes its persistent client in its context manager.
         # Request timeouts bound normal shutdown; never join a network call forever.
         deadline = time.monotonic() + 2.0
-        for thread in self.threads:
-            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        try:
+            if self.realtime is not None:
+                self.realtime.close()
+        finally:
+            for thread in self.threads:
+                if thread.ident is not None and thread is not threading.current_thread():
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))

@@ -53,6 +53,8 @@ from shared.realtime import WS_PATH, MAX_MESSAGE_BYTES
 from .control import CommandLeases
 from .realtime import RealtimeHub
 from .telemetry import TelemetryStore
+from .lifecycle import (Shutdown, OwnedRoute, OwnedServer, cleanup_owners,
+                        request_workers, stop_workers, WorkerCapacityError, SHUTDOWN_TIMEOUT_S)
 from shared.vitals import VitalsSampler
 from . import config
 from .audio import PiMic, PiSpeaker
@@ -72,6 +74,7 @@ companion_events: queue.Queue = queue.Queue(maxsize=32)
 events_lock = threading.Lock()
 companion_urgent = None
 companion_event_generation = 0
+_shutdown: Shutdown | None = None
 
 # Single engine instance, built at import and shared across requests.
 engine = GaitEngine(simulate=config.SIMULATE)
@@ -179,6 +182,8 @@ def _home_on_start() -> None:
     Physical startup motion requires explicit actuator/homing configuration at
     the hardware acceptance gate. No startup vendor construction is automatic.
     """
+    if _closing():
+        return
     pose = config.HOME_ON_START
     if pose == "stand":
         logger.info("Homing to STAND on startup (staged)")
@@ -192,30 +197,101 @@ def _home_on_start() -> None:
         logger.warning("Unknown PICRAWLER_HOME_ON_START=%r; skipping startup homing", pose)
 
 
+def _closing():
+    # A shutdown fence belongs to exactly one boot's authority.
+    return (_shutdown is not None and _shutdown.boot_id == leases.boot_id
+            and _shutdown.closing.is_set())
+
+
+def _latch_shutdown():
+    # STOP itself never waits for motion, sensors, audio or metrics. Repeat it
+    # under the short admission transaction so an older RESUME cannot win.
+    engine.stop()
+    with control_transition_lock:
+        leases.invalidate(advance_control_epoch=True)
+        realtime_hub.invalidate_commands()
+        engine.stop()
+
+
+async def _cleanup_shutdown():
+    operations = [("realtime", realtime_hub.close, True),
+                  ("companion events", _clear_companion_events, False),
+                  ("host vitals", _host_vitals.close, False)]
+    if speaker is not None:
+        operations.append(("speaker/amplifier", speaker.close, False))
+    if camera is not None:
+        operations.append(("camera", camera.stop, False))
+    await cleanup_owners(operations)
+    logger.info("Pi shutdown wait ended; cleanup and in-flight native work may remain incomplete")
+
+
+def _start_owner(owner, start, close):
+    if owner.closing.is_set():
+        return
+    try:
+        start()
+    finally:
+        # A native startup may return after the bounded shutdown wait. It must
+        # release its own late-acquired resources rather than resurrect capture.
+        if owner.closing.is_set():
+            close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _host_vitals.start()
+    global _shutdown
+    owner = _shutdown = Shutdown(_latch_shutdown, _cleanup_shutdown, leases.boot_id)
     try:
+        await _observation_result(request_workers.submit(_start_owner, owner, _host_vitals.start, _host_vitals.close))
+        if _closing():
+            raise RuntimeError("server shutdown requested during startup")
         if camera is not None:
-            camera.start()
-        _home_on_start()
+            await _observation_result(request_workers.submit(_start_owner, owner, camera.start, camera.stop))
+        if _closing():
+            raise RuntimeError("server shutdown requested during startup")
+        await _observation_result(request_workers.submit(_home_on_start))
+        if _closing():
+            raise RuntimeError("server shutdown requested during startup")
         yield
     finally:
-        try:
-            await realtime_hub.close()
-            if speaker is not None:
-                cleanup = await asyncio.to_thread(speaker.close)
-                if not cleanup["ok"]:
-                    logger.error("speaker shutdown: %s", cleanup["reason"])
-        finally:
-            try:
-                if camera is not None:
-                    camera.stop()
-            finally:
-                _host_vitals.close()
+        await owner.close()
 
 
 app = FastAPI(title="PiCrawler Robot Server", version="0.1.0", lifespan=lifespan)
+app.router.route_class = OwnedRoute
+
+
+async def _observation_result(future):
+    """An observation cannot retain a connection while its native read stalls."""
+    owner = _shutdown
+    if owner is None or owner.boot_id != leases.boot_id:
+        return await future
+    stopping = asyncio.create_task(owner.ready.wait())
+    try:
+        done, _ = await asyncio.wait((future, stopping), return_when=asyncio.FIRST_COMPLETED)
+        if stopping in done:
+            future.cancel()
+            return None
+        return future.result()
+    finally:
+        stopping.cancel()
+        await asyncio.gather(stopping, return_exceptions=True)
+
+
+async def _observation_stream(iterator):
+    sentinel = object()
+    try:
+        while not _closing():
+            item = await _observation_result(request_workers.submit(next, iterator, sentinel))
+            if item is sentinel or item is None:
+                return
+            yield item
+    finally:
+        # close() may itself wait on a driver. It shares bounded cleanup ownership.
+        try:
+            await asyncio.wait_for(request_workers.submit(iterator.close), .1)
+        except Exception:
+            logger.warning("observation iterator cleanup pending or failed", exc_info=True)
 
 
 @app.exception_handler(RequestValidationError)
@@ -251,7 +327,7 @@ def camera_stream() -> StreamingResponse:
     if camera is None:
         return Response(status_code=503, content="camera disabled")
     return StreamingResponse(
-        camera.mjpeg_frames(),
+        _observation_stream(camera.mjpeg_frames()),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"X-Crab-Provenance": "simulated" if camera.simulate else "real",
                  "Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -280,7 +356,7 @@ def audio_stream() -> Response:
     """Raw mic PCM (S16_LE mono @ MIC_RATE) the Jetson pulls for Whisper STT."""
     if mic is None:
         return Response(status_code=503, content="audio disabled")
-    return StreamingResponse(mic.stream(), media_type="audio/L16",
+    return StreamingResponse(_observation_stream(mic.stream()), media_type="audio/L16",
                              headers={"X-Audio-Provenance": "simulated" if mic.simulate else "real"})
 
 
@@ -298,9 +374,15 @@ class AudioSelfTest(BaseModel):
 
 @app.post(AUDIO_SELF_TEST_PATH)
 def audio_self_test(cmd: AudioSelfTest) -> dict:
+    owner = _shutdown
+    if _closing():
+        return {"ok": False, "played": False, "reason": "server shutting down"}
     if speaker is None:
         return {"ok": False, "played": False, "reason": "audio disabled"}
-    return speaker.self_test(play=cmd.play)
+    def authorize():
+        with control_transition_lock:
+            return "server shutting down" if owner is not _shutdown or _closing() else None
+    return speaker.self_test(play=cmd.play, authorize=authorize)
 
 
 @app.post(AUDIO_STOP_PATH)
@@ -319,6 +401,8 @@ def audio_stop(request: Request) -> Response:
 
 @app.post(AUDIO_PLAY_PATH)
 async def audio_play(request: Request) -> Response:
+    if _closing():
+        return JSONResponse(status_code=503, content={"ok": False, "played": False, "reason": "server shutting down"})
     if speaker is None:
         return JSONResponse(status_code=503, content={"ok": False, "played": False, "reason": "audio disabled"})
     try:
@@ -331,9 +415,16 @@ async def audio_play(request: Request) -> Response:
         data.extend(chunk)
         if len(data) > 2 * 1024 * 1024:
             return JSONResponse(status_code=413, content={"ok": False, "played": False, "reason": "WAV exceeds 2 MiB limit"})
-    result = await asyncio.to_thread(speaker.play_result, bytes(data), **envelope.model_dump(),
-        authorize=lambda: leases.consume(request.headers.get(AUDIO_LEASE_HEADER),
-                                         f"audio:{envelope.session_id}:{envelope.sequence}"))
+    def authorize():
+        with control_transition_lock:
+            return ("server shutting down" if _closing() else
+                    leases.consume(request.headers.get(AUDIO_LEASE_HEADER),
+                                   f"audio:{envelope.session_id}:{envelope.sequence}"))
+    try:
+        result = await request_workers.submit(speaker.play_result, bytes(data), **envelope.model_dump(),
+                                              authorize=authorize)
+    except WorkerCapacityError as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "played": False, "reason": str(exc)})
     return JSONResponse(status_code=200 if result.get("ok") or result.get("simulate") else 503, content=result)
 
 
@@ -345,6 +436,8 @@ class CompanionEvent(BaseModel):
 @app.post(COMPANION_EVENTS_PATH)
 def companion_event(event: CompanionEvent) -> dict:
     global companion_urgent
+    if _closing():
+        return {"ok": False, "reason": "server shutting down"}
     control_epoch = leases.control_epoch
     generation = companion_event_generation
     item = {"text": event.text, "timestamp": time.time(), "source": "dashboard",
@@ -358,6 +451,8 @@ def companion_event(event: CompanionEvent) -> dict:
         control_epoch = leases.control_epoch
     receipt["control_epoch"] = control_epoch
     with events_lock:
+        if _closing():
+            return {"ok": False, "reason": "server shutting down"}
         if not urgent and generation != companion_event_generation:
             return {"ok": False, "reason": "input preceded stop or session change"}
         delivered = realtime_hub.publish_event(item, control_epoch=control_epoch, urgent=bool(urgent),
@@ -404,7 +499,8 @@ def read_companion_events() -> dict:
 
 @app.post(CONTROL_LEASE_PATH)
 def command_lease() -> dict:
-    return leases.issue()
+    with control_transition_lock:
+        return {"ok": False, "reason": "server shutting down"} if _closing() else leases.issue()
 
 
 # --------------------------------------------------------------------------- #
@@ -463,8 +559,10 @@ def sim_clock() -> Response:
 async def _dashboard_events(request: Request):
     # No per-viewer event queue or historical replay. Slow readers resume with
     # the newest snapshot after backpressure clears. Browser rendering is bounded too.
-    while not await request.is_disconnected():
-        state = await asyncio.to_thread(_dashboard_state)
+    while not _closing() and not await request.is_disconnected():
+        state = await _observation_result(request_workers.submit(_dashboard_state))
+        if state is None or _closing():
+            return
         yield "event: state\ndata: " + json.dumps(state, separators=(",", ":"), allow_nan=False) + "\n\n"
         await asyncio.sleep(0.1)
 
@@ -537,9 +635,11 @@ def _execute(action: Action, cmd, operation, *, authorize=None, status_provider=
         # Admission and RESUME share STOP's short transaction. Movements and
         # sensor reads remain outside it so STOP never waits for a vendor gait.
         with control_transition_lock:
-            reason = authorize() if authorize is not None else None
+            reason = "server shutting down" if _closing() else (authorize() if authorize is not None else None)
             if reason is None:
                 reason = leases.consume(cmd.lease_id, cmd.command_id)
+            if reason is None and _closing():
+                reason = "server shutting down"
             result = operation() if reason is None and action == Action.RESUME else None
         if reason:
             return CommandResponse(ok=False, action=action, command_id=cmd.command_id, detail=reason)
@@ -606,7 +706,7 @@ def stop(cmd: StopCommand) -> CommandResponse:
         realtime_hub.invalidate_commands()
         result = engine.stop()
     _clear_companion_events()
-    if speaker:
+    if speaker and not _closing():
         speaker.stop()
     status = engine.get_status()
     status.observed_at = time.time()
@@ -644,6 +744,8 @@ def _clear_companion_events():
 
 def _session_lease(expected_epoch, register):
     with control_transition_lock:
+        if _closing():
+            return {"ok": False, "reason": "server shutting down", "control_epoch": leases.control_epoch}
         if expected_epoch != leases.control_epoch:
             return {"ok": False, "reason": "control epoch changed; input preceded stop or cancellation",
                     "control_epoch": leases.control_epoch}
@@ -662,7 +764,8 @@ def _make_realtime_hub(**overrides):
         status_fn=lambda: _status_with_distance(),
         dispatch_fn=lambda action, cmd, guard, status: _dispatch(action, cmd, guard, status),
         lease_fn=_session_lease, stop_fn=lambda: stop(StopCommand()),
-        clear_events_fn=_clear_companion_events, **overrides)
+        clear_events_fn=_clear_companion_events, worker_fn=request_workers.submit,
+        stop_worker_fn=stop_workers.submit, **overrides)
 
 
 realtime_hub = _make_realtime_hub()
@@ -670,6 +773,9 @@ realtime_hub = _make_realtime_hub()
 
 @app.websocket(WS_PATH)
 async def companion_socket(websocket: WebSocket):
+    if _closing():
+        await websocket.close(code=1001)
+        return
     # This machine-to-machine endpoint has no browser consumer. Browsers send
     # Origin; reject it before claiming control (closing an owner latches STOP).
     if websocket.headers.get("origin") is not None:
@@ -682,9 +788,10 @@ def main() -> None:
     import uvicorn
 
     logger.info("Starting PiCrawler server on %s:%d (simulate=%s)", config.HOST, config.PORT, engine.simulate)
-    uvicorn.run(app, host=config.HOST, port=config.PORT,
-                ws_max_size=MAX_MESSAGE_BYTES, ws_max_queue=4,
-                ws_per_message_deflate=False)
+    owned = OwnedServer(uvicorn.Config(app, host=config.HOST, port=config.PORT,
+        ws_max_size=MAX_MESSAGE_BYTES, ws_max_queue=4, ws_per_message_deflate=False,
+        timeout_graceful_shutdown=SHUTDOWN_TIMEOUT_S), lambda: _shutdown)
+    owned.run()
 
 
 if __name__ == "__main__":

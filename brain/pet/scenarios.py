@@ -151,7 +151,7 @@ def run_scenario(name):
     clock, voice, robot = VirtualClock(), SimulatedVoice(), ScenarioRobot()
     identity = SimpleNamespace(name="Crab", seed_traits=["gentle", "curious"],
                                character="A patient, curious companion.")
-    with patch("brain.pet.coordinator.ThreadPoolExecutor", ImmediateExecutor):
+    with patch("brain.pet.coordinator.SingleFlightOwner", ImmediateExecutor):
         companion = Coordinator(robot, voice, identity, clock=clock, wall_clock=clock,
                                 mode="interaction", motion_enabled=name in {"sensor-dropout", "low-battery"})
     frames, ids = [], {}
