@@ -6,6 +6,37 @@ All hardware tasks are future owner-controlled verification gates. ROS 2 is the
 intended long-term backbone; the reversible
 migration is specified in [the decision record](../design/robotics-architecture-ros2.md).
 
+## Status refresh — 2026-10-28
+
+The tables below retain their original evidence and priorities. Use the
+[commissioning report](../reports/software-commissioning.md) for current software
+verification and the [commissioning guide](../commissioning.md) for staged use.
+
+- Dashboard recovery and Resume ordering shipped in PR46. Typed read-only ROS
+  observations shipped in PR47, maintained isolated Crab Lab in PR48, exact
+  dashboard input outcomes in PR49, and persistence/progress/startup/shutdown
+  ownership in PR50. CTRL-02/03 and LIFE-01/02 now have fault/process regressions;
+  physical driver interruption remains unverified.
+- This commissioning increment addresses TIME-01 end to end through camera,
+  interpretation and Coordinator, adds passive platform/profile diagnostics for
+  START-02, makes microphone input default-off, and supplies tested paired
+  update/rollback plus a self-contained CLI handoff. Protocol/session/freshness
+  guards and disabled motion defaults remain intact.
+- ROS-01 now has an implemented observer and off-device middleware evidence.
+  Jetson arm64 resource/runtime acceptance remains open. ROS control integration
+  and a ROS dashboard gateway are future work, not implied by the observer.
+- LAB-01 has actual CPU physics, browser controls, seeded evaluation and bounded
+  opt-in synthetic episodes. MODEL-01 fidelity, self-collision, measured servo
+  dynamics and sim-to-real validation remain open; there is no learned policy.
+- STORAGE-01 is the first device gate: the Jetson's previous I/O errors and
+  aborted journal require separately accepted storage recovery/verification
+  before installation or deployment. A reboot or writable mount does not close it.
+- SENSOR-01, publisher-lineage TIME-02, measured perception quality/resource
+  budgets, physical audio/mic/sensor acceptance and actuator commissioning remain
+  open. The [next perception/data milestone](../design/perception-learning-milestone.md)
+  specifies off-device evidence and held-out evaluation before learning or live
+  media collection. No unattended training, recording or autonomous motion is added.
+
 ## This local iteration
 
 | ID / priority | Evidence and outcome | Acceptance / verification |

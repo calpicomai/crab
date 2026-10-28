@@ -298,6 +298,14 @@ class StreamResponse(httpx.Response):
         self.close()
 
 
+class RawStream(httpx.SyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __iter__(self):
+        yield from self.chunks()
+
+
 class FakeHTTP:
     def __init__(self, clock, outcomes=()):
         self.clock, self.outcomes = clock, list(outcomes)
@@ -335,6 +343,59 @@ class HTTPObserverTests(unittest.TestCase):
                                 wall=lambda: clock.wall, monotonic=lambda: clock.mono, **kwargs)
         self.addCleanup(observer.close)
         return observer, fake, clock
+
+    def test_slow_raw_trickle_is_not_coalesced_past_body_deadline(self):
+        observer, _, clock = self.make(timeout_s=.5)
+        consumed = []
+
+        class Drip(httpx.SyncByteStream):
+            def __iter__(self):
+                for _ in range(20000):
+                    consumed.append(1)
+                    clock.step(.1)
+                    yield b" "
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Drip()))
+        with httpx.Client(transport=transport) as client:
+            with self.assertRaisesRegex(ValueError, "deadline"):
+                observer._read(client, "/sim/clock")
+        self.assertLessEqual(len(consumed), 6)
+
+    def test_fragmented_raw_body_has_a_chunk_budget(self):
+        for fragment in (b" ", b""):
+            with self.subTest(empty=not fragment):
+                observer, _, _ = self.make()
+                consumed = []
+
+                class Fragmented(httpx.SyncByteStream):
+                    def __iter__(self):
+                        for _ in range(20000):
+                            consumed.append(1)
+                            yield fragment
+
+                transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Fragmented()))
+                with httpx.Client(transport=transport) as client:
+                    with self.assertRaisesRegex(ValueError, "chunk count"):
+                        observer._read(client, "/sim/state")
+                self.assertEqual(len(consumed), 4097)
+
+    def test_close_is_checked_between_unbuffered_raw_chunks(self):
+        observer, _, _ = self.make()
+        consumed = []
+
+        class Closing(httpx.SyncByteStream):
+            def __iter__(self):
+                for _ in range(20000):
+                    consumed.append(1)
+                    if len(consumed) == 2:
+                        observer.close()
+                    yield b" "
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Closing()))
+        with httpx.Client(transport=transport) as client:
+            with self.assertRaisesRegex(ValueError, "closed"):
+                observer._read(client, "/sim/state")
+        self.assertEqual(len(consumed), 2)
 
     def test_safe_construction_explicit_start_single_worker_get_only_latest_slot(self):
         observer, fake, clock = self.make(poll_hz=5.)
@@ -406,7 +467,7 @@ class HTTPObserverTests(unittest.TestCase):
                         response.headers["content-encoding"] = "gzip"
                     else:
                         response.is_stream_consumed = False
-                        response.iter_raw = lambda **kwargs: iter((clock.step(2.) or b"{}",))
+                        response.stream = RawStream(lambda: (clock.step(2.) or b"{}",))
                 return response
 
             fake.stream = stream
@@ -423,7 +484,7 @@ class HTTPObserverTests(unittest.TestCase):
             if url.endswith("/sim/state"):
                 response.headers.pop("content-length", None)
                 response.is_stream_consumed = False
-                response.iter_raw = lambda **kwargs: iter([b" " * 16384] * 17)
+                response.stream = RawStream(lambda: [b" " * 16384] * 17)
             return response
 
         fake.stream = stream

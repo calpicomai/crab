@@ -9,9 +9,8 @@
 #
 # The venv is created WITH --system-site-packages on purpose: on the Jetson,
 # JetPack provides OpenCV-with-GStreamer (for the CSI camera) and the CUDA torch
-# wheel in the SYSTEM Python, and an isolated venv cannot see them (perception
-# then silently falls back to synthetic frames + the dummy detector). This lets
-# the venv import those system libs while our pinned deps install into the venv.
+# wheel in the SYSTEM Python. This exposes those system libraries to the venv;
+# missing capture/models remain unavailable, never implicitly simulated.
 #
 # Perception's own deps (ultralytics for YOLO, and the NanoOWL stack) are
 # JetPack-specific and installed separately — see brain/requirements-perception.txt.
@@ -27,8 +26,7 @@ python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/pip" install --upgrade pip
 "$VENV/bin/pip" install -r "$NODE_DIR/requirements.txt"
 
-# Report which perception libs the venv can see (informational; perception falls
-# back to simulate/dummy for whichever are missing).
+# Import visibility only, not inference or physical acceptance.
 echo "Perception library visibility:"
 "$VENV/bin/python" - <<'PY'
 for mod in ("cv2", "torch", "ultralytics"):
@@ -41,17 +39,12 @@ PY
 
 cat <<EOF
 
-Brain node ready.
-
-Run the Stage 1 movement test from the repo root (uses brain/config.py,
-default target picrawler.local:8000):
+Python dependency setup finished; device/runtime acceptance remains open.
+Next: run passive local diagnostics, then follow docs/commissioning.md.
+This report starts no companion, capture, playback or control connection:
     cd "$REPO_ROOT"
-    brain/.venv/bin/python -m brain.test_movement
+    bash brain/run.sh check -- --offline
 
-Override the robot address without editing code:
-    ROBOT_HOST=192.168.1.42 brain/.venv/bin/python -m brain.test_movement
-
-Perception (camera + detection): install its deps, then run the server:
-    brain/.venv/bin/pip install -r brain/requirements-perception.txt
-    brain/.venv/bin/python -m brain.perception.server   # then curl localhost:8100/snapshot
+Models, ROS, audio/microphone, perception and physical movement require separate
+provisioning/acceptance. No driver, power-mode or service changes are made here.
 EOF

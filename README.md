@@ -27,7 +27,8 @@ does not establish physical readiness or a learned policy.
 Existing launchers remain the entry points:
 
 ```bash
-bash setup.sh                 # Python environments; does not launch the robot
+bash robot/setup.sh           # Pi dependencies; installation requires approval
+bash brain/setup.sh           # Jetson dependencies; installation requires approval
 bash robot/run.sh             # Pi readiness server; actuators disabled by default
 bash brain/run.sh check       # read-only readiness and audio diagnostics
 bash brain/run.sh pet         # stationary interaction
@@ -39,6 +40,12 @@ existing preferences before updating the robot address/name. The launcher does
 not install drivers, change power modes, start model services or enable motion.
 Use `--` to pass runtime options, for example
 `bash brain/run.sh pet -- --no-stt --no-camera`.
+
+For a paired, pinned update and staged bring-up, use the
+[commissioning guide](docs/commissioning.md) and
+[self-contained Codex CLI prompt](docs/CODEX_COMMISSIONING_PROMPT.md). They keep
+existing configuration and calibration, start with hardware disabled, and leave
+storage, installation and physical acceptance as explicit gates.
 
 Open `http://<pi>:8000/sim` for local typed engagement, stop/resume controls,
 input provenance/age/use reasons, intentions and audio results. The `/sim` name
@@ -96,7 +103,12 @@ The [local dashboard reliability report](docs/reports/dashboard-local-repair.md)
 records the startup repair and current test limits. The
 [systems backlog](docs/backlog/robotics-systems.md) and
 [phased ROS 2 design](docs/design/robotics-architecture-ros2.md) describe the next
-engineering work; ROS runtime integration is not implemented yet.
+engineering work. The implemented [ROS observation bridge](docs/ros-observer.md)
+publishes typed diagnostics read-only; it does not forward control or replace
+the Pi's hardware owner. Actual ROS middleware was tested off-device; Jetson
+installation and runtime acceptance remain open. The next
+[perception and learning milestone](docs/design/perception-learning-milestone.md)
+builds on timed evidence rather than claiming an existing learned policy.
 
 The kinematic simulator labels displacement/turn assumptions. `turn(degrees)`
 rejects nonzero precise-angle requests on both hardware and simulator. The
