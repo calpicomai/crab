@@ -1,0 +1,4 @@
+# Extra Python dependencies for the off-device Humble/Python3.10 test image.
+# rclpy/ROSIDL/diagnostic_msgs come from the official pinned ROS base image.
+pydantic>=2.6,<3
+httpx>=0.27,<1

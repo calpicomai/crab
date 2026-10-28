@@ -1,0 +1,20 @@
+# Availability, producer use and physical verification are independent reports.
+ObservationContext context
+string<=64 name
+bool source_valid
+string<=128 source
+bool available_valid
+bool available
+string<=16 provenance
+bool reported_fresh_valid
+bool reported_fresh
+bool used_valid
+bool used
+bool physically_verified_valid
+bool physically_verified
+bool max_age_s_valid
+float64 max_age_s
+bool confidence_valid
+float64 confidence
+string<=300 failure_reason
+string<=300 ignored_reason
