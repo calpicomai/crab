@@ -18,6 +18,7 @@ import asyncio
 import threading
 import queue
 import time
+from uuid import uuid4
 from dataclasses import asdict
 from contextlib import asynccontextmanager
 
@@ -346,19 +347,27 @@ def companion_event(event: CompanionEvent) -> dict:
     global companion_urgent
     control_epoch = leases.control_epoch
     generation = companion_event_generation
-    item = {"text": event.text, "timestamp": time.time(), "source": "dashboard"}
+    item = {"text": event.text, "timestamp": time.time(), "source": "dashboard",
+            "event_id": uuid4().hex}
+    receipt = {"event_id": item["event_id"], "boot_id": leases.boot_id, "session_id": None}
     command = interpret(event.text)
     urgent = command and command.name in {"stop", "stay", "scold"}
     # STOP remains effective even if a slow companion cannot receive its text.
     if urgent:
         stop(StopCommand())
         control_epoch = leases.control_epoch
+    receipt["control_epoch"] = control_epoch
     with events_lock:
         if not urgent and generation != companion_event_generation:
             return {"ok": False, "reason": "input preceded stop or session change"}
-        delivered = realtime_hub.publish_event(item, control_epoch=control_epoch, urgent=bool(urgent))
+        delivered = realtime_hub.publish_event(item, control_epoch=control_epoch, urgent=bool(urgent),
+                                                receipt=receipt)
         if delivered is not None:
-            return {"ok": delivered, **({} if delivered else {"reason": "companion event queue unavailable or full"})}
+            return {"ok": delivered, **receipt,
+                    **({} if delivered else {"reason": "companion event queue unavailable or full"})}
+        # Legacy HTTP consumption has no WS session. These fields preserve its
+        # origin for observation without granting it any new control authority.
+        item.update(boot_id=receipt["boot_id"], session_id=None)
         if urgent:
             # Stop also works if the brain/model is down or its input queue is full.
             companion_urgent = item
@@ -369,7 +378,7 @@ def companion_event(event: CompanionEvent) -> dict:
                 companion_events.put_nowait(item)
             except queue.Full:
                 return {"ok": False, "reason": "input queue full"}
-    return {"ok": True}
+    return {"ok": True, **receipt}
 
 
 @app.get(COMPANION_EVENTS_PATH)

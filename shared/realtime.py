@@ -18,6 +18,9 @@ from .protocol import (
 )
 
 WS_PATH = "/companion/ws"
+# Optional observation metadata, negotiated in the HTTP upgrade so old strict
+# protocol-v1 peers keep their original Hello and event JSON shapes.
+INPUT_RECEIPTS_HEADER = "X-Crab-Input-Receipts"
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024
 HEARTBEAT_INTERVAL_S = 1.0
@@ -138,6 +141,9 @@ class InputEvent(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     timestamp: float = Field(ge=0)
     source: Literal["dashboard"] = "dashboard"
+    # Observation/correlation only: never a lease, epoch or freshness proof.
+    # Optional so a current companion can still receive events from an older Pi.
+    event_id: Identifier | None = None
 
 
 class EventMessage(Envelope):
@@ -264,7 +270,10 @@ def encode_message(message: Envelope) -> str:
         json.dumps(payload, allow_nan=False)
         adapter = _CLIENT if isinstance(message, (LeaseRequest, CommandRequest, PingRequest)) else _SERVER
         validated = adapter.validate_python(payload)
-        encoded = json.dumps(validated.model_dump(mode="json"), allow_nan=False,
+        wire = validated.model_dump(mode="json")
+        if isinstance(validated, EventMessage) and validated.event.event_id is None:
+            wire["event"].pop("event_id", None)
+        encoded = json.dumps(wire, allow_nan=False,
                              ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise ProtocolError("WebSocket message exceeds 64 KiB")

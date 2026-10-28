@@ -275,7 +275,10 @@ def main(argv=None) -> int:
                 text = event["text"]
                 generation += 1
                 coordinator.hear(text, source=event.get("source", "operator"),
-                                 control_epoch=event.get("control_epoch"))
+                                 control_epoch=event.get("control_epoch"),
+                                 event_id=event.get("event_id"),
+                                 event_boot_id=event.get("boot_id"),
+                                 event_session_id=event.get("session_id"))
                 memory.remember(observed_facts={"utterance": text}, source=event.get("source", "user"))
                 command = commands.interpret(text)
                 if command is None and mind:
