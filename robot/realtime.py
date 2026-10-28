@@ -63,7 +63,7 @@ class RealtimeHub:
     EVENT_LIMIT = 32
 
     def __init__(self, *, boot_id_fn, epoch_fn, status_fn, dispatch_fn, lease_fn, stop_fn,
-                 clear_events_fn=lambda: None, worker_fn=None, stop_worker_fn=None,
+                 clear_events_fn=lambda: None, worker_fn=None, stop_worker_fn=None, stop_latch_fn=None,
                  heartbeat_timeout_s=HEARTBEAT_TIMEOUT_S,
                  status_interval_s=STATUS_INTERVAL_S, send_timeout_s=1.0):
         self.boot_id_fn, self.status_fn = boot_id_fn, status_fn
@@ -72,6 +72,9 @@ class RealtimeHub:
         self.clear_events_fn = clear_events_fn
         self.worker_fn = worker_fn
         self.stop_worker_fn = stop_worker_fn
+        # When supplied, this callback is a synchronous control-only fence and
+        # returns a truthful latch-only response. stop_fn then completes it.
+        self.stop_latch_fn = stop_latch_fn
         self.heartbeat_timeout_s = heartbeat_timeout_s
         self.status_interval_s = status_interval_s
         self.send_timeout_s = send_timeout_s
@@ -257,9 +260,28 @@ class RealtimeHub:
         return asyncio.get_running_loop().run_in_executor(None, function, *args)
 
     def _submit_stop(self):
-        if self.stop_worker_fn is not None:
-            return self.stop_worker_fn(self.stop_fn)
-        return self._submit(self.stop_fn)
+        response = self.stop_latch_fn() if self.stop_latch_fn is not None else None
+        operation = self.stop_fn if response is None else lambda: self.stop_fn(response)
+        try:
+            future = (self.stop_worker_fn(operation) if self.stop_worker_fn is not None
+                      else self._submit(operation))
+        except Exception:
+            if response is None:
+                raise
+            logger.warning("STOP latched; completion worker unavailable", exc_info=True)
+            future = asyncio.get_running_loop().create_future()
+            future.set_result(response)
+            return future
+        if response is None:
+            return future
+
+        async def completion():
+            try:
+                return await future
+            except Exception:
+                logger.warning("STOP latched; optional completion failed", exc_info=True)
+                return response
+        return asyncio.create_task(completion())
 
     async def _command(self, session, request, future):
         try:
@@ -334,7 +356,16 @@ class RealtimeHub:
                 elif isinstance(request, CommandRequest):
                     if request.action == Action.STOP:
                         if stop_task is not None and not stop_task.done():
-                            self._error(session, request.request_id, "stop_pending", "stop is already being latched")
+                            if self.stop_latch_fn is None:
+                                self._error(session, request.request_id, "stop_pending", "stop is already being latched")
+                            else:
+                                # A prior optional completion may still be
+                                # blocked after an explicit RESUME. Re-latch
+                                # every fresh STOP without queueing cleanup.
+                                response = self.stop_latch_fn()
+                                response.command_id = request.command.command_id
+                                self._ack(session, ResultMessage(**session.envelope,
+                                    request_id=request.request_id, response=response))
                         else:
                             # Invalidate admission before scheduling any worker;
                             # an older queued RESUME can no longer clear STOP.
@@ -372,6 +403,10 @@ class RealtimeHub:
                 session.live = False
                 session.generation += 1
                 session.leases.clear()
+            if self.stop_latch_fn is not None:
+                # Disconnect/heartbeat expiry must win before waiting for any
+                # earlier optional STOP completion or cancelled command waiter.
+                self.stop_latch_fn()
             # Retain STOP until completion, but never await a vendor gait here.
             if command_task is not None and not command_task.done():
                 command_task.cancel()

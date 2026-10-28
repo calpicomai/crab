@@ -38,9 +38,13 @@ leases and stop generations, and closes observation streams. An older Resume
 cannot clear the new fence. A delayed audio self-test rechecks its original
 owner at playback admission, so a replacement lifespan cannot authorize it.
 
-Blocking requests use 32 bounded worker slots and a separate eight-slot STOP
-lane. Saturation rejects work instead of queueing it; WebSocket rejection does
-not consume its lease or leave the hub busy. Shutdown cleanup attempts every
+Blocking requests use 32 bounded worker slots. Audio cancellation and motion
+STOP completion have separate eight-slot lanes. HTTP/WebSocket STOP and owner
+disconnect latch the software transition before any fallible worker admission;
+exhausted cleanup capacity returns an explicit latch-only result without status
+or an audio-completion claim. Saturation rejects other work instead of queueing
+it; WebSocket rejection does not consume its lease or leave the hub busy.
+Shutdown cleanup attempts every
 independent owner concurrently with a one-second cleanup wait and a three-second
 software shutdown budget. Pending driver, camera or amplifier cleanup is logged
 as incomplete. These budgets bound software waits, not hardware power removal.
@@ -56,7 +60,10 @@ brain/.venv/bin/python tests/browser_dashboard_outcomes.py --output-dir /tmp/cra
 
 The process tests use fakes and owned loopback simulation, including blocked
 commands, disk stalls, open streams, capacity rejection and late shutdown races.
-They do not operate a physical robot. Cloud validation on 2026-10-28 passed 439
-unit tests, full simulator smoke and the actual Chromium outcome/reconnect test.
+They do not operate a physical robot. Cloud validation on 2026-10-28 passed the
+unit suite, full simulator smoke and the actual Chromium outcome/reconnect test.
+Additional saturation regressions cover blocked audio cancellation, full STOP
+completion capacity, intervening Resume, WebSocket disconnect and failed
+worker-thread startup.
 Vendor interruption, physical STOP distance, amplifier cleanup, storage health
 and device service signal delivery remain commissioning gates.

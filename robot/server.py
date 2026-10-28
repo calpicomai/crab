@@ -699,22 +699,42 @@ def sit(cmd: SitCommand) -> CommandResponse:
     return _dispatch(Action.SIT, cmd)
 
 
-@app.post(ACTION_PATHS[Action.STOP], response_model=CommandResponse)
-def stop(cmd: StopCommand) -> CommandResponse:
+def _latch_stop(cmd: StopCommand) -> CommandResponse:
+    """Only the short authority transaction/event fence; no device/status work."""
     with control_transition_lock:
         leases.invalidate(advance_control_epoch=True)
         realtime_hub.invalidate_commands()
         result = engine.stop()
     _clear_companion_events()
+    return CommandResponse(ok=True, action=Action.STOP, command_id=cmd.command_id,
+                           detail="stop latched; active vendor boundary may still be finishing; audio cancellation and status pending",
+                           motion=MotionResult.model_validate(asdict(result)))
+
+
+def _finish_stop(response: CommandResponse) -> CommandResponse:
     if speaker and not _closing():
         speaker.stop()
     status = engine.get_status()
     status.observed_at = time.time()
     status.boot_id = leases.boot_id
     status.motion_state = engine.motion_state()
-    return CommandResponse(ok=True, action=Action.STOP, command_id=cmd.command_id,
-                           detail="stop latched; active vendor boundary may still be finishing",
-                           motion=MotionResult.model_validate(asdict(result)), status=status)
+    return response.model_copy(update={"status": status,
+        "detail": "stop latched; active vendor boundary may still be finishing"})
+
+
+def stop(cmd: StopCommand) -> CommandResponse:
+    return _finish_stop(_latch_stop(cmd))
+
+
+@app.post(ACTION_PATHS[Action.STOP], response_model=CommandResponse)
+async def stop_http(cmd: StopCommand) -> CommandResponse:
+    # Optional cleanup/result capacity can reject work; it cannot reject STOP.
+    response = _latch_stop(cmd)
+    try:
+        return await stop_workers.submit(_finish_stop, response)
+    except Exception:
+        logger.warning("STOP latched; optional cleanup/status completion unavailable", exc_info=True)
+        return response
 
 
 @app.post(ACTION_PATHS[Action.RESUME], response_model=CommandResponse)
@@ -763,7 +783,9 @@ def _make_realtime_hub(**overrides):
         epoch_fn=lambda: leases.control_epoch,
         status_fn=lambda: _status_with_distance(),
         dispatch_fn=lambda action, cmd, guard, status: _dispatch(action, cmd, guard, status),
-        lease_fn=_session_lease, stop_fn=lambda: stop(StopCommand()),
+        lease_fn=_session_lease,
+        stop_fn=lambda response=None: _finish_stop(response) if response is not None else stop(StopCommand()),
+        stop_latch_fn=lambda: _latch_stop(StopCommand()),
         clear_events_fn=_clear_companion_events, worker_fn=request_workers.submit,
         stop_worker_fn=stop_workers.submit, **overrides)
 

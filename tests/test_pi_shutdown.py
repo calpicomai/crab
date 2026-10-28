@@ -24,13 +24,23 @@ from robot.control import CommandLeases
 from robot.gait import GaitEngine
 from robot.lifecycle import DaemonWorkers, OwnedRoute
 from shared import (
-    ACTION_PATHS, AUDIO_LEASE_HEADER, AUDIO_PLAY_PATH, AUDIO_SEQUENCE_HEADER,
+    ACTION_PATHS, AUDIO_LEASE_HEADER, AUDIO_PLAY_PATH, AUDIO_STOP_PATH, AUDIO_SEQUENCE_HEADER,
     AUDIO_SESSION_HEADER, CONTROL_LEASE_PATH, Action, ResumeCommand,
 )
 from shared.realtime import WS_PATH
 
 
 class WorkerBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_failed_thread_start_cancels_its_future_and_releases_capacity(self):
+        workers = DaemonWorkers(capacity=1)
+        future = asyncio.get_running_loop().create_future()
+        with patch.object(asyncio.get_running_loop(), "create_future", return_value=future), \
+             patch.object(threading.Thread, "start", side_effect=RuntimeError("fixture start failed")):
+            with self.assertRaisesRegex(RuntimeError, "fixture start failed"):
+                workers.submit(lambda: "never started")
+        self.assertTrue(future.cancelled(), "failed submission must not leave an orphan pending future")
+        self.assertEqual(await workers.submit(lambda: "capacity recovered"), "capacity recovered")
+
     async def test_request_flood_is_rejected_while_reserved_stop_lane_remains_responsive(self):
         from fastapi import FastAPI
         from robot import lifecycle
@@ -284,6 +294,8 @@ class Camera:
             receipt("stats_entered")
             threading.Event().wait(30)
         return {"available": False}
+    def input_health(self):
+        return {"available": False, "provenance": "simulated", "failure_reason": "fixture camera unavailable"}
 class Vitals:
     def start(self): receipt("vitals_start")
     def close(self): receipt("vitals_close")
@@ -292,8 +304,12 @@ class Speaker:
     simulate = True
     last_result = None
     def health(self): return {"available": False, "provenance": "simulated"}
-    def stop(self):
+    def stop(self, **kwargs):
         receipt("speaker_stop")
+        if os.environ.get("BLOCK_SPEAKER_STOP"):
+            until = time.monotonic()+30
+            while not os.path.exists(os.environ["SHUTDOWN_TRACE"] + ".speaker-release") and time.monotonic() < until:
+                time.sleep(.01)
         return {"ok": True}
     def close(self, **kwargs):
         receipt("speaker_close")
@@ -334,7 +350,8 @@ server.main()
 
 
 class OwnedServerShutdownTests(unittest.TestCase):
-    def start_child(self, *, cleanup_failure=False, simulate=True, blocked_ws=False, hold_cleanup=False, blocked_stats=False):
+    def start_child(self, *, cleanup_failure=False, simulate=True, blocked_ws=False, hold_cleanup=False, blocked_stats=False,
+                    blocked_speaker_stop=False):
         temporary = self.enterContext(tempfile.TemporaryDirectory())
         self.trace = Path(temporary) / "trace.jsonl"
         log = self.enterContext(open(Path(temporary) / "server.log", "w+"))
@@ -357,6 +374,8 @@ class OwnedServerShutdownTests(unittest.TestCase):
             environment["HOLD_CLEANUP"] = "1"
         if blocked_stats:
             environment["BLOCK_STATS"] = "1"
+        if blocked_speaker_stop:
+            environment["BLOCK_SPEAKER_STOP"] = "1"
         self.child = subprocess.Popen([sys.executable, "-c", CHILD], env=environment,
                                       stdout=log, stderr=subprocess.STDOUT)
         def terminate():
@@ -389,6 +408,35 @@ class OwnedServerShutdownTests(unittest.TestCase):
                 return
             time.sleep(.01)
         self.fail(f"missing receipts {names}: {self.receipts()}")
+
+    def fill_stop_lane(self, path):
+        for index in range(8):
+            def post(index=index):
+                try:
+                    self.http.post(path, json={}, headers={AUDIO_SESSION_HEADER: f"stop-lane-{index}",
+                                                          AUDIO_SEQUENCE_HEADER: "1"})
+                except httpx.TransportError:
+                    pass
+            worker = threading.Thread(target=post, daemon=True)
+            worker.start()
+            self.addCleanup(worker.join, 1)
+        self.addCleanup(lambda: Path(str(self.trace)+".speaker-release").touch())
+        deadline = time.monotonic()+2
+        while time.monotonic() < deadline:
+            if sum(item["name"] == "speaker_stop" for item in self.receipts()) == 8:
+                return
+            time.sleep(.005)
+        self.fail(f"fake speaker cancellation did not fill its bounded lane: {self.receipts()}")
+
+    def motion_latched(self):
+        return self.http.get("/sim/state").json()["robot_runtime"]["motion"]["stop_latched"]
+
+    def fresh_resume(self):
+        lease = self.http.post(CONTROL_LEASE_PATH).json()["lease_id"]
+        response = self.http.post(ACTION_PATHS[Action.RESUME], json={"lease_id": lease,
+                                                                    "command_id": f"resume-{time.monotonic_ns()}"})
+        self.assertTrue(response.json()["ok"], response.text)
+        self.assertFalse(self.motion_latched())
 
     def assert_bounded_exit(self, sig=signal.SIGTERM):
         signalled = time.monotonic()
@@ -521,6 +569,90 @@ class OwnedServerShutdownTests(unittest.TestCase):
         self.assertLess(time.monotonic()-started, .5)
         self.assertEqual(sum(item["name"] == "stats_entered" for item in self.receipts()), 2)
         self.assert_bounded_exit()
+
+    def test_audio_cancellation_lane_cannot_prevent_a_motion_stop_latch(self):
+        self.start_child(blocked_speaker_stop=True)
+        self.fill_stop_lane(AUDIO_STOP_PATH)
+        self.assertFalse(self.motion_latched())
+        response = self.http.post(AUDIO_STOP_PATH, headers={AUDIO_SESSION_HEADER: "overflow", AUDIO_SEQUENCE_HEADER: "1"})
+        self.assertEqual(response.status_code, 503)
+        result = []
+        request = threading.Thread(target=lambda: result.append(self.http.post(ACTION_PATHS[Action.STOP], json={})), daemon=True)
+        request.start()
+        self.addCleanup(request.join, 1)
+        deadline = time.monotonic()+.5
+        while time.monotonic() < deadline and not self.motion_latched():
+            time.sleep(.005)
+        self.assertTrue(self.motion_latched(), "audio cancellation capacity must not gate the motion latch")
+        Path(str(self.trace)+".speaker-release").touch()
+        request.join(1)
+        self.assertEqual(result[0].status_code, 200)
+
+    def test_http_motion_stop_latches_with_its_completion_lane_full_after_resume(self):
+        self.start_child(blocked_speaker_stop=True)
+        self.fill_stop_lane(ACTION_PATHS[Action.STOP])
+        self.fresh_resume()
+        response = self.http.post(ACTION_PATHS[Action.STOP], json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertIsNone(response.json()["status"], "fallback must not claim status collection completed")
+        self.assertTrue(self.motion_latched())
+
+    def test_websocket_stop_and_disconnect_latch_with_completion_lane_full_after_resume(self):
+        self.start_child(blocked_speaker_stop=True)
+        self.fill_stop_lane(ACTION_PATHS[Action.STOP])
+        self.fresh_resume()
+        websocket = self.enterContext(connect(self.url.replace("http:", "ws:")+WS_PATH,
+                                              proxy=None, close_timeout=.2, ping_interval=None))
+        hello = json.loads(websocket.recv(timeout=1))
+        websocket.send(json.dumps({"version": 1, "type": "command", "boot_id": hello["boot_id"],
+            "session_id": hello["session_id"], "request_id": "saturated-stop", "action": "stop",
+            "payload": {"command_id": "saturated-stop"}}))
+        while True:
+            result = json.loads(websocket.recv(timeout=1))
+            if result.get("request_id") == "saturated-stop":
+                break
+        self.assertEqual(result["type"], "result", result)
+        self.assertTrue(result["response"]["ok"])
+        self.assertIsNone(result["response"]["status"])
+        self.assertTrue(self.motion_latched())
+        self.fresh_resume()
+        websocket.close()
+        deadline = time.monotonic()+.5
+        while time.monotonic() < deadline and not self.motion_latched():
+            time.sleep(.005)
+        self.assertTrue(self.motion_latched(), "disconnect must latch before completion worker admission")
+
+    def test_websocket_stop_and_disconnect_latch_while_a_prior_stop_completion_is_pending(self):
+        self.start_child(blocked_speaker_stop=True)
+        websocket = self.enterContext(connect(self.url.replace("http:", "ws:")+WS_PATH,
+                                              proxy=None, close_timeout=.2, ping_interval=None))
+        self.addCleanup(lambda: Path(str(self.trace)+".speaker-release").touch())
+        hello = json.loads(websocket.recv(timeout=1))
+        def send_stop(request_id):
+            websocket.send(json.dumps({"version": 1, "type": "command", "boot_id": hello["boot_id"],
+                "session_id": hello["session_id"], "request_id": request_id, "action": "stop",
+                "payload": {"command_id": request_id}}))
+        send_stop("first-stop")
+        self.wait_receipts("speaker_stop")
+        self.fresh_resume()
+        send_stop("second-stop")
+        while True:
+            result = json.loads(websocket.recv(timeout=1))
+            if result.get("request_id") == "second-stop":
+                break
+        self.assertEqual(result["type"], "result", result)
+        self.assertTrue(result["response"]["ok"])
+        self.assertIsNone(result["response"]["status"])
+        self.assertTrue(self.motion_latched())
+        self.fresh_resume()
+        websocket.close()
+        deadline = time.monotonic()+.5
+        while time.monotonic() < deadline and not self.motion_latched():
+            time.sleep(.005)
+        self.assertTrue(self.motion_latched(), "disconnect cannot await an earlier optional STOP completion before latching")
+        self.assertEqual(sum(item["name"] == "speaker_stop" for item in self.receipts()), 1,
+                         "a pending optional cancellation must not be queued again")
 
 
 if __name__ == "__main__":

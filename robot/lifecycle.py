@@ -33,9 +33,9 @@ class DaemonWorkers:
 
     def submit(self, function, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        future = loop.create_future()
         if not self._slots.acquire(blocking=False):
             raise WorkerCapacityError("blocking worker capacity reached; work not queued")
+        future = loop.create_future()
         context = contextvars.copy_context()
 
         def finish(result=None, error=None):
@@ -59,12 +59,18 @@ class DaemonWorkers:
             except RuntimeError:
                 pass  # The owner has closed; a late result grants no authority.
 
-        threading.Thread(target=run, name="crab-io", daemon=True).start()
+        try:
+            threading.Thread(target=run, name="crab-io", daemon=True).start()
+        except BaseException:
+            self._slots.release()
+            future.cancel()
+            raise
         return future
 
 
 request_workers = DaemonWorkers()
 stop_workers = DaemonWorkers(capacity=8)
+audio_stop_workers = DaemonWorkers(capacity=8)
 
 
 class OwnedRoute(APIRoute):
@@ -72,7 +78,8 @@ class OwnedRoute(APIRoute):
     def __init__(self, path, endpoint, **kwargs):
         if not inspect.iscoroutinefunction(endpoint):
             original = endpoint
-            workers = stop_workers if original.__name__ in {"stop", "audio_stop"} else request_workers
+            workers = (audio_stop_workers if original.__name__ == "audio_stop" else
+                       stop_workers if original.__name__ == "stop" else request_workers)
 
             @functools.wraps(original)
             async def endpoint(*args, **kwargs):
