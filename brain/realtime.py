@@ -21,7 +21,7 @@ from websockets.sync.client import ClientConnection, connect
 from shared import Action, CommandResponse
 from shared.clock import CaptureClock, capture_age
 from shared.local import require_local_url
-from shared.realtime import (MAX_MESSAGE_BYTES, WS_PATH, CommandRequest, ErrorMessage,
+from shared.realtime import (MAX_MESSAGE_BYTES, WS_PATH, INPUT_RECEIPTS_HEADER, CommandRequest, ErrorMessage,
                              EventMessage, HelloMessage, LeaseMessage, LeaseRequest,
                              PingRequest, PongMessage, ResultMessage, StatusMessage,
                              encode_message, parse_server_message)
@@ -220,7 +220,8 @@ class RealtimeClient:
             try:
                 with connect(self.url, proxy=None, create_connection=_NoRedirectConnection,
                              open_timeout=1.0, close_timeout=0.2, ping_interval=None,
-                             compression=None, max_size=MAX_MESSAGE_BYTES, max_queue=4) as connection:
+                             compression=None, max_size=MAX_MESSAGE_BYTES, max_queue=4,
+                             additional_headers={INPUT_RECEIPTS_HEADER: "1"}) as connection:
                     if self._closed.is_set():
                         break
                     with self._lock:
@@ -326,6 +327,8 @@ class RealtimeClient:
                 if age is not None and age <= 5:
                     callback = ("event", {**message.event.model_dump(),
                                           "_clock": self._clock.model_dump(),
+                                          "boot_id": message.boot_id,
+                                          "session_id": message.session_id,
                                           "control_epoch": message.control_epoch})
             elif isinstance(message, PongMessage):
                 if self._ping and message.request_id == self._ping[0]:

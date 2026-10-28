@@ -65,6 +65,10 @@ class Coordinator:
         self._pending = []
         self._history = deque(maxlen=60)
         self._movements = deque(maxlen=60)
+        # Bounded observation links only. IDs never participate in policy,
+        # freshness, stop ordering, leases or command dispatch.
+        self._input_events = deque(maxlen=32)
+        self._active_input_event = self._episode_event = None
         self._status = {}
         self._status_at = None
         self._boot_id = None
@@ -125,6 +129,7 @@ class Coordinator:
                 self._pending.remove(intent)
 
     def _stop(self, intent):
+        self._cancel_episode_event("episode interrupted by stop")
         self.stopped = True
         self.blocked_reason = intent.reason or "stop requested"
         self.phase = "stopped"
@@ -371,10 +376,40 @@ class Coordinator:
         return ""
 
     def _begin_episode(self):
+        self._cancel_episode_event("newer engagement superseded episode")
+        self._episode_event = self._active_input_event
         self.phase = "notice"
         self._phase_until = self.clock() + self.mood.temperament.hesitation_s
 
-    def hear(self, text, *, source="operator", control_epoch=None):
+    def _cancel_episode_event(self, reason):
+        if self._episode_event is not None:
+            self._episode_event.update(state="cancelled", reason=reason)
+            self._episode_event = None
+
+    def hear(self, text, *, source="operator", control_epoch=None, event_id=None,
+             event_boot_id=None, event_session_id=None):
+        """Preserve existing behavior and observe this input's specific result."""
+        observation = None
+        if isinstance(event_id, str) and 1 <= len(event_id) <= 64:
+            observation = {"event_id": event_id, "boot_id": event_boot_id,
+                           "session_id": event_session_id, "state": "processed",
+                           "reason": "input processed; current interaction continued",
+                           "intention_id": None, "kind": None}
+            self._input_events.append(observation)
+        self._active_input_event = observation
+        try:
+            intent = self._hear(text, source=source, control_epoch=control_epoch)
+            if observation is not None:
+                if intent is not None:
+                    observation["_intent"] = intent
+                elif self._episode_event is observation:
+                    observation.update(state="queued", kind="acknowledge",
+                                       reason="engagement processed; episode acknowledgement pending")
+            return intent
+        finally:
+            self._active_input_event = None
+
+    def _hear(self, text, *, source="operator", control_epoch=None):
         text = str(text).strip()[:1000]
         if not text:
             return None
@@ -656,7 +691,10 @@ class Coordinator:
             self._phase_until = now + 0.25 / self.mood.temperament.tempo
         elif self.phase == "orient":
             self.phase = "acknowledge"
-            self.request("acknowledge", source="episode", reason="acknowledge once then listen")
+            intent = self.request("acknowledge", source="episode", reason="acknowledge once then listen")
+            if self._episode_event is not None:
+                self._episode_event["_intent"] = intent
+                self._episode_event = None
             self._phase_until = now + 0.5
         elif self.phase in {"acknowledge", "respond"} and not self.voice.busy:
             self.phase = "listen"
@@ -664,6 +702,24 @@ class Coordinator:
         elif self.phase == "listen" and not self.voice.busy:
             self.phase = "settle"
             self.request("settle", source="episode", reason="interaction window ended; remain nearby")
+
+    def _input_event_snapshot(self):
+        if self._episode_event is not None and self.phase not in {"notice", "orient"}:
+            self._cancel_episode_event("episode interrupted before acknowledgement")
+        events = []
+        for observation in self._input_events:
+            item = {key: value for key, value in observation.items() if key != "_intent"}
+            intent = observation.get("_intent")
+            if intent is not None:
+                state = {"pending": "queued", "active": "processing"}.get(
+                    intent.status.value, intent.status.value)
+                reason = intent.result.get("reason") or intent.reason
+                if state == "failed" and reason.startswith("command result unavailable:"):
+                    state = "unknown"
+                item.update(intention_id=intent.id, kind=intent.kind.value,
+                            state=state, reason=reason)
+            events.append(item)
+        return events
 
     def snapshot(self):
         for name, raw in list(self.inputs.items()):
@@ -679,7 +735,8 @@ class Coordinator:
                 "pose": self._status.get("pose", "unknown"),
                 "continuity": {"engagements": self._captured_engagements, "greetings": self._greeting_count,
                                "meaning": "interaction counts, not person recognition"},
-                "inputs": self.inputs, "intentions": [i.model_dump(mode="json") for i in self._history],
+                "inputs": self.inputs, "input_events": self._input_event_snapshot(),
+                "intentions": [i.model_dump(mode="json") for i in self._history],
                 "movements": list(self._movements), "audio": self.voice.health(),
                 "motion_enabled": self.motion_enabled, "position": "unmeasured; no locomotion in milestone 1"}
 

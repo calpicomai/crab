@@ -392,23 +392,83 @@ async function postJSON(path,payload,timeout=1800){
     const result=await response.json();if(!response.ok)throw Error(result.reason||result.detail||"HTTP "+response.status);return result;
   }finally{clearTimeout(timer);}
 }
+const INPUT_OUTCOME_WAIT_MS=30000;
+let trackedInput=null;
+function inputContext(){
+  const s=latestState,b=s?.brain;
+  return {boot:s?.server_boot_id,publisher:b?._publisher_id,sequence:b?._sequence};
+}
+function trackInput(result,context,prefix=""){
+  if(typeof result.event_id!=="string"||!result.event_id||typeof result.boot_id!=="string"||!result.boot_id||
+     !(result.session_id===null||typeof result.session_id==="string"&&result.session_id)||result.correlation_available===false){
+    trackedInput=null;text("input-result",prefix+"Input delivered locally · outcome uncorrelated (companion receipt support unavailable)");return;
+  }
+  const sameBoot=context.boot===result.boot_id;
+  trackedInput={id:result.event_id,boot:result.boot_id,session:result.session_id,prefix,
+    publisher:sameBoot?context.publisher:null,lastSequence:sameBoot&&Number.isSafeInteger(context.sequence)?context.sequence:0,
+    seenBoot:sameBoot,started:performance.now(),done:false,progress:"Input queued locally · awaiting companion receipt"};
+  text("input-result",prefix+trackedInput.progress);
+  // Telemetry can overtake the HTTP acknowledgement.
+  renderInputOutcome(performance.now());
+}
+function renderInputOutcome(now){
+  const pending=trackedInput;if(!pending||pending.done)return;
+  const show=value=>text("input-result",pending.prefix+value);
+  const unknown=(reason,done=false)=>{show("Companion outcome unknown · "+reason);pending.done=done;};
+  if(now-pending.started>=INPUT_OUTCOME_WAIT_MS){unknown("no correlated result within 30 s; input was not retried",true);return;}
+  const s=latestState,b=s?.brain;
+  if(!streamConnected||!s||serverAge(s)>2000||telemetryAge(s)>3000){
+    unknown("waiting for fresh connected telemetry");return;
+  }
+  if(s.server_boot_id!==pending.boot){
+    if(pending.seenBoot)unknown("Pi restarted after this input",true);
+    return;
+  }
+  pending.seenBoot=true;
+  if(typeof b?._publisher_id!=="string"||!Number.isSafeInteger(b?._sequence)){
+    unknown("companion observation metadata unavailable");return;
+  }
+  if(pending.publisher&&b._publisher_id!==pending.publisher){unknown("companion publisher changed after this input",true);return;}
+  if(b._sequence<=pending.lastSequence)return;
+  pending.publisher=b._publisher_id;pending.lastSequence=b._sequence;
+  const transport=b.pipeline?.transport;
+  if(transport?.session_id&&transport.session_id!==pending.session){unknown("companion delivery session changed",true);return;}
+  if(pending.session&&transport?.ready!==true){unknown("companion delivery session is unavailable");return;}
+  const event=Array.isArray(b.input_events)?b.input_events.find(e=>e?.event_id===pending.id&&
+    e.boot_id===pending.boot&&e.session_id===pending.session):null;
+  if(!event){show(pending.progress);return;}
+  const detail=typeof event.reason==="string"?event.reason.slice(0,240):"No outcome detail";
+  if(event.state==="queued"||event.state==="processing"){
+    pending.progress=`Input processed · ${event.kind||"behavior"} ${event.state==="queued"?"queued":"in progress"} · ${detail}`;
+    show(pending.progress);return;
+  }
+  if(["completed","cancelled","expired","blocked","failed","unknown"].includes(event.state)){
+    show(`Companion outcome: ${event.state} · ${detail}`);pending.done=true;
+  }else if(event.state==="processed"){
+    show("Input processed by companion · "+detail);pending.done=true;
+  }
+}
 async function sendText(value){
   const message=value||$("engagement").value.trim();if(!message||messagePending||stopPending)return;
-  const sequence=++controlSequence;messagePending=true;$("send-control").disabled=true;
+  const sequence=++controlSequence,context=inputContext();trackedInput=null;messagePending=true;$("send-control").disabled=true;
+  text("input-result","Sending input · awaiting local acknowledgement");
   try{const result=await postJSON("__EVENT_PATH__",{text:message});
-    if(sequence===controlSequence){text("input-result",result.ok?"Input delivered locally · awaiting behavior outcome":result.reason||"Input rejected");if(result.ok&&!value)$("engagement").value="";}
+    if(sequence===controlSequence){if(result.ok)trackInput(result,context);else text("input-result",result.reason||"Input rejected");if(result.ok&&!value)$("engagement").value="";}
   }catch(error){if(sequence===controlSequence)text("input-result","Input not confirmed: "+error.message);}
   finally{messagePending=false;$("send-control").disabled=stopPending;}
 }
 async function stopCompanion(){
   if(stopPending)return;stopPending=true;$("send-control").disabled=true;const sequence=++controlSequence;
+  trackedInput=null;const context=inputContext();
   $("stop-control").setAttribute("aria-busy","true");$("resume-confirm").hidden=true;
   text("input-result","STOP requested · awaiting Pi acknowledgement");
   let acknowledged=false;
   try{const result=await postJSON("__STOP_PATH__",{});acknowledged=result.ok===true;
     if(sequence===controlSequence)text("input-result",result.ok?"STOP acknowledged by Pi · wait for current status":result.detail||"Stop not confirmed");
     // Preserve the existing explicit stop input as a coordinator boundary too.
-    if(result.ok){const delivered=await postJSON("__EVENT_PATH__",{text:"stop"});if(!delivered.ok&&sequence===controlSequence)text("input-result","Pi STOP acknowledged · companion input rejected: "+(delivered.reason||"unknown reason"));}
+    if(result.ok){const delivered=await postJSON("__EVENT_PATH__",{text:"stop"});if(sequence===controlSequence){
+      if(delivered.ok)trackInput(delivered,context,"Pi STOP acknowledged · ");
+      else text("input-result","Pi STOP acknowledged · companion input rejected: "+(delivered.reason||"unknown reason"));}}
   }catch(error){if(sequence===controlSequence)text("input-result",acknowledged?"Pi STOP acknowledged · companion input delivery unconfirmed. "+error.message:"STOP unconfirmed · use the physical cutoff if needed. "+error.message);}
   finally{stopPending=false;$("send-control").disabled=messagePending;$("stop-control").removeAttribute("aria-busy");}
 }
@@ -482,7 +542,7 @@ function paint(now){
     if(now-metricStart>=1000){const seconds=(now-metricStart)/1000;stateHz=stateMessages/seconds;cameraHz=cameraFrames/seconds;cameraReceivedHz=cameraReceivedFrames/seconds;stateMessages=cameraFrames=cameraReceivedFrames=0;metricStart=now;metricsReady=true;}
     const displayState=latestState&&Number.isFinite(serverAge(latestState))?latestState:(observedState||latestState);
     if(displayState){renderState(displayState);sampleGraphs(displayState,now);}else if(now-lastHistoryAt>=1000){drawGraphs(now);lastHistoryAt=now;}
-    renderPreviewRates(now);renderTransport(now);
+    renderPreviewRates(now);renderTransport(now);renderInputOutcome(now);
     const age=frameAge(now),recent=cameraReceivedAt>0&&now-cameraReceivedAt<=2000;$("cam").style.opacity=recent?"1":".4";
     text("camera-age",Number.isFinite(age)?Math.round(age)+" ms":"Unknown");
     text("camera-source",`${cameraProvenance.toUpperCase()} / ${!Number.isFinite(age)?"TIMING UNVERIFIED":age>2000?"STALE":"ENCODED FRAME"}`);

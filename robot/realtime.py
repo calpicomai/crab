@@ -19,7 +19,7 @@ from shared.realtime import (
     CommandRequest, ErrorMessage, EventMessage, HelloMessage, InputEvent,
     LeaseMessage, LeaseRequest, PingRequest, PongMessage, ProtocolError,
     ResultMessage, StatusMessage, HEARTBEAT_TIMEOUT_S, STATUS_INTERVAL_S,
-    WS_PATH, PROTOCOL_VERSION, encode_message, parse_client_message,
+    WS_PATH, PROTOCOL_VERSION, INPUT_RECEIPTS_HEADER, encode_message, parse_client_message,
 )
 
 logger = logging.getLogger("picrawler.realtime")
@@ -30,6 +30,7 @@ class _Session:
     boot_id: str
     session_id: str
     loop: asyncio.AbstractEventLoop
+    input_receipts: bool = False
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     generation: int = 0
     live: bool = True
@@ -144,12 +145,15 @@ class RealtimeHub:
                 self._owner.events.clear()
                 self._owner.urgent = None
 
-    def publish_event(self, item: dict, *, control_epoch: int, urgent=False) -> bool | None:
+    def publish_event(self, item: dict, *, control_epoch: int, urgent=False,
+                      receipt: dict | None = None) -> bool | None:
         """Nonblocking HTTP hook: None means no WS owner; False means full.
 
         An active session exclusively consumes input. Nothing is copied to an
         HTTP replay queue. STOP has its own replaceable slot and clears social
         events; actuator stopping itself remains the HTTP endpoint's job.
+        An optional diagnostic receipt gets the accepted session atomically;
+        reading health afterwards could instead report a replacement owner.
         """
         event = InputEvent.model_validate(item)
         with self._lock:
@@ -160,6 +164,8 @@ class RealtimeHub:
                 return False
             if not urgent and len(session.events) >= self.EVENT_LIMIT:
                 return False
+            if not session.input_receipts:
+                event = event.model_copy(update={"event_id": None})
             self._sequence += 1
             message = EventMessage(**session.envelope, sequence=self._sequence,
                                    control_epoch=control_epoch, event=event)
@@ -168,6 +174,9 @@ class RealtimeHub:
                 session.urgent = message
             else:
                 session.events.append(message)
+            if receipt is not None:
+                receipt.update(session.envelope)
+                receipt["correlation_available"] = session.input_receipts
             self._notify_locked(session)
             return True
 
@@ -359,7 +368,8 @@ class RealtimeHub:
                 await asyncio.shield(stop_task)
 
     async def handle(self, websocket):
-        session = _Session(self.boot_id_fn(), uuid.uuid4().hex, asyncio.get_running_loop())
+        session = _Session(self.boot_id_fn(), uuid.uuid4().hex, asyncio.get_running_loop(),
+            input_receipts=getattr(websocket, "headers", {}).get(INPUT_RECEIPTS_HEADER) == "1")
         with self._lock:
             owned = self._owner is not None
             if not owned:
